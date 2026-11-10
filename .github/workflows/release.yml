@@ -1,0 +1,102 @@
+name: release
+
+# Builds the Windows x64 executable and — for tags — attaches it to a GitHub
+# Release. Mirrors build-windows.yml, but adds the publishing step, so users
+# never have to build: Actions -> "release" -> Run workflow (or push a v* tag).
+#
+# Only x64 is produced here: hosted GitHub runners are x86-64. The ARM64 exe is
+# built on an ARM64 Windows machine (same ReliefStudio.spec) and attached
+# manually with `gh release upload <tag> dist/ReliefStudio.exe#ReliefStudio-windows-arm64.exe`.
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag (empty: build + artifact only)"
+        required: false
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  windows-x64:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Locate the project
+        shell: bash
+        run: |
+          if   [ -f ReliefStudio.spec ];        then echo "DIR=."      >> "$GITHUB_ENV"
+          elif [ -f relief/ReliefStudio.spec ]; then echo "DIR=relief" >> "$GITHUB_ENV"
+          else echo "ReliefStudio.spec not found in the checkout" && exit 1
+          fi
+
+      - name: Install dependencies
+        working-directory: ${{ env.DIR }}
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install numpy pillow pyinstaller
+
+      - name: Run tests
+        working-directory: ${{ env.DIR }}
+        run: python -m unittest discover -s tests -v
+
+      - name: Build
+        working-directory: ${{ env.DIR }}
+        run: python -m PyInstaller ReliefStudio.spec --noconfirm --clean
+
+      - name: Smoke test the executable
+        working-directory: ${{ env.DIR }}
+        shell: pwsh
+        run: |
+          $p = Start-Process -FilePath "dist\ReliefStudio.exe" `
+                             -ArgumentList "--port","8791","--no-browser" -PassThru
+          try {
+            $ok = $false
+            foreach ($i in 1..20) {
+              Start-Sleep -Seconds 2
+              try {
+                $r = Invoke-WebRequest "http://127.0.0.1:8791/app.js" -UseBasicParsing -TimeoutSec 5
+                if ($r.StatusCode -eq 200) { $ok = $true; break }
+              } catch { }
+            }
+            if (-not $ok) { throw "server did not answer on 8791" }
+            foreach ($asset in @("vendor/three.module.js", "api/defaults")) {
+              $r = Invoke-WebRequest "http://127.0.0.1:8791/$asset" -UseBasicParsing -TimeoutSec 20
+              if ($r.StatusCode -ne 200) { throw "$asset did not answer 200 (bundled static assets missing?)" }
+            }
+            Write-Host "smoke test passed"
+          } finally {
+            Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue
+          }
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ReliefStudio-windows-x64
+          path: ${{ env.DIR }}/dist/ReliefStudio.exe
+          if-no-files-found: error
+
+      - name: Publish the GitHub Release
+        if: startsWith(github.ref, 'refs/tags/') || inputs.tag != ''
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ inputs.tag || github.ref_name }}
+          name: Relief Studio ${{ inputs.tag || github.ref_name }}
+          files: ${{ env.DIR }}/dist/ReliefStudio.exe
+          generate_release_notes: true
+          fail_on_unmatched_files: true
+          body: |
+            Standalone Windows x64 build of Relief Studio.
+
+            - Unsigned: SmartScreen shows "Windows protected your PC" -> *More info* -> *Run anyway*.
+            - One file, no installer. Double-click: the browser opens at <http://127.0.0.1:8765/>.
+            - Stop it with the **Quit** button in the page header, or close the console window.
+            - ARM64 users: build with an ARM64 Python on an ARM64 Windows machine (same `ReliefStudio.spec`).

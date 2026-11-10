@@ -122,6 +122,16 @@ Node worker harness, `reference-web/harness/`):
 
 Neither affects the geometry of a rectangular plate produced from a depth map.
 
+## Tests
+
+```bash
+python -m unittest discover -s tests -v
+```
+
+Nine stdlib tests (~2 s; only numpy and pillow are needed): the 512-grid `demo-depth.png`
+STL hash canary (byte-identical across platforms), 16-bit depth decode precision, and the
+GUI server's `/api/hello` / single-instance probing. CI runs them before every build.
+
 
 ## macOS app
 
@@ -171,22 +181,25 @@ supported routes, both using the same `ReliefStudio.spec`:
    (tick *Add python.exe to PATH*).
 3. Double-click `packaging\build-windows.bat`.
 4. It creates `.venv-build`, installs numpy/pillow/PyInstaller, and writes
-   `dist\ReliefStudio.exe` — a single self-contained file (~40–60 MB).
+   `dist\ReliefStudio.exe` — a single self-contained file (~26.5 MB on x64, ~21 MB on
+   arm64; builds in ~20 s).
 
-Run it by double-clicking: the browser opens at `http://127.0.0.1:8765/`.
-It is a windowed build (no console), so startup errors go to
-`%TEMP%\relief-studio-error.log` and appear in a message box.
+Run it by double-clicking: the browser opens at `http://127.0.0.1:8765/`. The Windows
+build keeps a console window (the URL and Ctrl+C live there); startup errors also go to
+`%TEMP%\relief-studio-error.log`. Startup takes ~1–2 s, and launching a second copy opens
+the running instance and exits.
 
 No build needed? `run-windows.bat` starts it straight from source.
 
 **B. GitHub Actions (no Windows machine)**
 
-`.github/workflows/build-windows.yml` builds the exe on `windows-latest`,
-smoke-tests it (starts it, fetches `app.js` and the bundled three.js), and
-uploads the artifact `ReliefStudio-windows-x64`. Trigger it from the Actions tab
-(*Run workflow*) or push a `v*` tag. If these files live in a `relief/`
-subfolder, keep the workflow at the repository root — the first step detects
-which layout it is.
+`.github/workflows/build-windows.yml` builds the exe on `windows-latest`, runs the
+tests, smoke-tests the executable (starts it, fetches `app.js` and the bundled
+three.js), and uploads the artifact `ReliefStudio-windows-x64`.
+`.github/workflows/release.yml` does the same and attaches the exe to a GitHub Release
+when a `v*` tag is pushed — so users can just download a build. Both are triggered from
+the Actions tab (*Run workflow*). Keep the workflow at the repository root — the first
+step detects whether the project is in the root or a `relief/` subfolder.
 
 **Windows notes**
 
@@ -220,11 +233,12 @@ relief/
 ├── relief.py              # geometry kernel (depth map -> mesh)
 ├── relief_gui.py          # local HTTP server + JSON/binary API
 ├── static/                # UI (app.js, style.css, vendor/three)
+├── tests/                 # unittest regression tests (STL hash canary, decode, API)
 ├── ReliefStudio.spec      # PyInstaller recipe (Windows + macOS/Linux)
 ├── packaging/
 │   ├── build-macos.sh     # one-click macOS .app + .dmg
 │   └── build-windows.bat  # one-click Windows build
 ├── run-windows.bat        # run from source on Windows
 ├── run.sh                 # run from source on macOS/Linux
-└── .github/workflows/     # CI that produces the .exe artifact
+└── .github/workflows/     # CI: .exe artifact (build-windows.yml), GitHub Release (release.yml)
 ```

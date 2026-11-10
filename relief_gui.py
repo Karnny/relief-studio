@@ -114,6 +114,8 @@ class Handler(BaseHTTPRequestHandler):
         path = self.path.split("?")[0]
         if path == "/":
             path = "/index.html"
+        if path == "/api/hello":
+            return self._json(200, {"app": APP_ID, "version": APP_VERSION})
         if path == "/api/defaults":
             return self._json(200, {"defaults": DEFAULTS,
                                     "images": [{"id": k, "width": int(v.shape[1]),
@@ -270,28 +272,44 @@ def report_fatal(exc: BaseException) -> None:
         info(text)
 
 
-def find_running(port: int) -> str | None:
-    """Return the URL of an already-running Relief Studio, if there is one."""
+def probe_port(port: int) -> str | None:
+    """Return the base URL if a Relief Studio answers on this port, else None."""
     import json as _json
     import urllib.request
 
-    def probe(url: str) -> str | None:
+    base = f"http://127.0.0.1:{port}/"
+
+    def fetch(path: str):
         try:
-            with urllib.request.urlopen(url, timeout=0.4) as resp:
-                body = _json.loads(resp.read().decode())
+            with urllib.request.urlopen(base + path, timeout=0.3) as resp:
+                return _json.loads(resp.read().decode())
         except Exception:
             return None
-        # /api/hello identifies current builds; /api/defaults also exists on
-        # older ones, so a previous release is still recognised as ours.
-        if body.get("app") == APP_ID or ("defaults" in body and "images" in body):
-            return url.rsplit("/api/", 1)[0] + "/"
-        return None
 
-    for candidate in range(port, port + 12):
-        base = f"http://127.0.0.1:{candidate}/"
-        found = probe(base + "api/hello") or probe(base + "api/defaults")
-        if found:
-            return found
+    # /api/hello identifies current builds; /api/defaults also exists on older
+    # ones, so a previous release is still recognised as ours.
+    body = fetch("api/hello") or fetch("api/defaults")
+    if not isinstance(body, dict):
+        return None
+    if body.get("app") == APP_ID or ("defaults" in body and "images" in body):
+        return base
+    return None
+
+
+def find_running(port: int) -> str | None:
+    """Return the URL of an already-running Relief Studio, if there is one.
+
+    Ports are probed concurrently. Sequential probing used to cost ~10 s on
+    machines where the loopback firewall drops the SYN instead of refusing it
+    (Windows with a security agent): 12 ports x 2 endpoints x 0.4 s timeout.
+    """
+    from concurrent.futures import ThreadPoolExecutor
+
+    candidates = list(range(port, port + 12))
+    with ThreadPoolExecutor(max_workers=len(candidates)) as pool:
+        for found in pool.map(probe_port, candidates):
+            if found is not None:
+                return found
     return None
 
 

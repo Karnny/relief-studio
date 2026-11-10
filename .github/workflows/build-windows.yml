@@ -2,10 +2,9 @@ name: build-windows
 
 # Builds dist/ReliefStudio.exe and uploads it as the artifact
 # "ReliefStudio-windows-x64". Works whether these files sit at the repository
-# root or inside a relief/ subfolder.
+# root or inside a relief/ subfolder. Tag pushes are handled by release.yml,
+# which builds the same exe and attaches it to a GitHub Release.
 on:
-  push:
-    tags: ["v*"]
   workflow_dispatch:
 
 jobs:
@@ -32,6 +31,10 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           python -m pip install numpy pillow pyinstaller
+
+      - name: Run tests
+        working-directory: ${{ env.DIR }}
+        run: python -m unittest discover -s tests -v
 
       - name: Build
         working-directory: ${{ env.DIR }}
