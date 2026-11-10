@@ -171,6 +171,10 @@ Notes:
 
 ## Windows executable
 
+A prebuilt **Windows x64** exe is attached to every GitHub Release:
+<https://github.com/Karnny/relief-studio/releases/latest> — download and run, no build
+needed. (Unsigned, so SmartScreen warns once; ARM64 must be built locally.)
+
 PyInstaller cannot cross-compile: an `.exe` has to be produced on Windows. Two
 supported routes, both using the same `ReliefStudio.spec`:
 
