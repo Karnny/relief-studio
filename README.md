@@ -1,3 +1,5 @@
+> Moving this project to another machine? Start with [HANDOFF.md](HANDOFF.md) — current state, Windows build steps, gotchas and open items.
+
 # the source tool relief → depth map → own mesh
 
 Derived from the source tool's shipped web client (Aug 2026 build). The relief
