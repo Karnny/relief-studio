@@ -1,0 +1,147 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Relief Studio</title>
+<link rel="stylesheet" href="/style.css" />
+<script type="importmap">
+{ "imports": { "three": "/vendor/three.module.js" } }
+</script>
+</head>
+<body>
+<header>
+  <div class="brand"><span class="dot"></span> Relief Studio <small>depth map → printable relief</small></div>
+  <div class="hint">Drag to orbit · scroll to zoom · shift-drag to pan</div>
+  <button id="quit" title="Stop the local server and close the app">Quit</button>
+</header>
+
+<main>
+  <aside id="panel">
+    <section class="card">
+      <label class="drop" id="drop">
+        <input type="file" id="file" accept="image/*" hidden />
+        <img id="thumb" alt="" hidden />
+        <div id="dropText">
+          <strong>Drop a depth map</strong>
+          <span>PNG / JPG · white = high</span>
+        </div>
+      </label>
+      <div class="row tiny" id="imgInfo"></div>
+    </section>
+
+    <section class="card">
+      <div class="presets">
+        <button data-preset="low">Low relief</button>
+        <button data-preset="high">High detail</button>
+      </div>
+
+      <div class="field">
+        <div class="label"><span>Size</span><input class="num" id="width_mm" type="number" min="20" max="250" step="1" value="60" /><i>mm</i></div>
+        <input class="range" id="width_mm_r" type="range" min="20" max="250" step="1" value="60" />
+      </div>
+
+      <div class="field">
+        <div class="label"><span>Carving mode</span></div>
+        <div class="segmented" id="mode">
+          <button data-mode="emboss" class="on">Emboss</button>
+          <button data-mode="engrave">Engrave</button>
+        </div>
+      </div>
+
+      <div class="field">
+        <div class="label"><span>Carving depth</span><input class="num" id="relief_height" type="number" min="0" max="60" step="0.1" value="6" /><i>mm</i></div>
+        <input class="range" id="relief_height_r" type="range" min="0" max="60" step="0.1" value="6" />
+      </div>
+
+      <details>
+        <summary>Advanced</summary>
+
+        <div class="field switchrow">
+          <span>Remove base</span>
+          <label class="switch"><input type="checkbox" id="remove_base" /><span></span></label>
+        </div>
+
+        <div class="field" id="baseField">
+          <div class="label"><span>Base thickness</span><input class="num" id="base_thickness" type="number" min="0.1" max="10" step="0.1" value="1" /><i>mm</i></div>
+          <input class="range" id="base_thickness_r" type="range" min="0.1" max="10" step="0.1" value="1" />
+        </div>
+
+        <div class="field">
+          <div class="label"><span>Background cut</span><input class="num" id="black_point" type="number" min="0" max="0.8" step="0.01" value="0" /></div>
+          <input class="range" id="black_point_r" type="range" min="0" max="0.8" step="0.01" value="0" />
+          <div class="row tiny">Depths below this become flat plate — the source tool-style dark background.</div>
+        </div>
+
+        <div class="field">
+          <div class="label"><span>Smoothing</span><input class="num" id="smooth" type="number" min="0" max="8" step="0.5" value="0" /><i>px</i></div>
+          <input class="range" id="smooth_r" type="range" min="0" max="8" step="0.5" value="0" />
+          <div class="row tiny">Gaussian blur on the depth map — 2–3 px at native res matches the source tool's smoothness.</div>
+        </div>
+
+        <div class="field">
+          <div class="label"><span>Depth curve</span></div>
+          <div class="segmented" id="curve">
+            <button data-curve="linear" class="on">Linear</button>
+            <button data-curve="gamma">Gamma</button>
+            <button data-curve="s-curve">S-curve</button>
+          </div>
+        </div>
+
+        <div class="field">
+          <div class="label"><span>Bend mode</span></div>
+          <div class="segmented" id="bend">
+            <button data-bend="off" class="on">Off</button>
+            <button data-bend="convex">Convex</button>
+            <button data-bend="concave">Concave</button>
+          </div>
+        </div>
+
+        <div class="field" id="bendExtra" hidden>
+          <div class="label"><span>Bend axis</span></div>
+          <div class="segmented" id="axis">
+            <button data-axis="xz" class="on">X–Z</button>
+            <button data-axis="yz">Y–Z</button>
+          </div>
+          <div class="label" style="margin-top:10px"><span>Bend angle</span><input class="num" id="bend_angle" type="number" min="1" max="360" step="5" value="60" /><i>°</i></div>
+          <input class="range" id="bend_angle_r" type="range" min="1" max="360" step="5" value="60" />
+        </div>
+      </details>
+
+      <div class="field">
+        <div class="label"><span>Preview resolution</span><input class="num" id="preview_res" type="number" min="128" max="2048" step="64" value="256" /></div>
+        <input class="range" id="preview_res_r" type="range" min="128" max="2048" step="64" value="256" />
+        <div class="row tiny" id="previewHint">Grid nodes on the long edge. Browser-side; export uses the value below.</div>
+      </div>
+
+      <div class="field">
+        <div class="label"><span>Export resolution</span><input class="num" id="subdivisions" type="number" min="512" max="8192" step="64" value="1024" /></div>
+        <input class="range" id="subdivisions_r" type="range" min="512" max="8192" step="64" value="1024" />
+        <div class="row tiny" id="exportHint">STL up to 8192 · OBJ/GLB up to 2048.</div>
+      </div>
+
+      <button class="reset" id="reset">Reset settings</button>
+    </section>
+  </aside>
+
+  <section id="stage">
+    <canvas id="view"></canvas>
+    <div id="stats"></div>
+    <div id="tools">
+      <button id="wire" title="Toggle wireframe">Wireframe</button>
+      <button id="spin" title="Toggle auto-rotate">Auto-rotate</button>
+      <button id="tex" class="on" title="Texture from the source image">Texture</button>
+    </div>
+    <div id="export">
+      <span id="exportInfo"></span>
+      <button data-fmt="stl" class="primary">Export STL</button>
+      <button data-fmt="obj">OBJ</button>
+      <button data-fmt="glb">GLB</button>
+    </div>
+    <div id="busy" hidden><div class="spinner"></div></div>
+  </section>
+</main>
+
+<script type="module" src="/app.js"></script>
+</body>
+</html>

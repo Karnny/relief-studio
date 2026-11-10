@@ -1,0 +1,430 @@
+import * as THREE from 'three';
+import { OrbitControls } from '/vendor/OrbitControls.js';
+
+const $ = (id) => document.getElementById(id);
+
+// Surface failures in the UI instead of a silent blank viewport.
+function reportError(msg) {
+  document.title = 'ERR ' + msg;
+  const s = document.getElementById('stats');
+  if (s) s.textContent = '⚠ ' + msg;
+}
+window.addEventListener('error', (e) => reportError(e.message || String(e.error)));
+window.addEventListener('unhandledrejection', (e) => reportError(e.reason?.message || String(e.reason)));
+
+const state = {
+  imageId: null,
+  wireframe: false,
+  spin: false,
+  textured: true,
+  previewSubdiv: 256,
+  lastMeshMs: 0,
+};
+
+// ---------------------------------------------------------------- three.js
+const canvas = $('view');
+const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, alpha: false });
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.05;
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x0e0f11);
+
+const camera = new THREE.PerspectiveCamera(35, 1, 0.1, 20000);
+camera.position.set(0, 0, 140);
+
+const controls = new OrbitControls(camera, canvas);
+controls.enableDamping = true;
+controls.dampingFactor = 0.08;
+controls.minDistance = 5;
+controls.maxDistance = 4000;
+
+scene.add(new THREE.HemisphereLight(0xffffff, 0x14171a, 0.75));
+const key = new THREE.DirectionalLight(0xfff6ec, 2.4);
+key.position.set(70, 90, 160);
+scene.add(key);
+const fill = new THREE.DirectionalLight(0x9fb6ff, 0.55);
+fill.position.set(-120, -60, 80);
+scene.add(fill);
+const rim = new THREE.DirectionalLight(0xffffff, 0.9);
+rim.position.set(-40, 120, -120);
+scene.add(rim);
+
+const material = new THREE.MeshStandardMaterial({
+  color: 0xd9d0c4, roughness: 0.68, metalness: 0.04, side: THREE.DoubleSide,
+});
+const mesh = new THREE.Mesh(new THREE.BufferGeometry(), material);
+mesh.visible = false;
+scene.add(mesh);
+
+let texture = null;
+
+// Debug handle (handy in DevTools and for automated checks).
+window.__relief = { scene, camera, controls, mesh, material, state };
+window.__relief.refresh = (...a) => refresh(...a);
+
+function resize() {
+  const w = canvas.clientWidth || 1;
+  const h = canvas.clientHeight || 1;
+  renderer.setSize(w, h, false);
+  camera.aspect = w / h;
+  camera.updateProjectionMatrix();
+}
+new ResizeObserver(resize).observe(canvas);
+resize();
+
+function frameCamera(head) {
+  const [extX, extY] = head.extents;
+  const depth = Math.max(0.001, head.z_max - head.z_min);
+  const size = Math.max(extX, extY, depth);
+  const dist = size / (2 * Math.tan((camera.fov * Math.PI) / 360)) * 1.35;
+  camera.position.set(dist * 0.12, dist * 0.10, dist);
+  controls.target.set(0, 0, 0);
+  controls.update();
+}
+
+// ---------------------------------------------------------------- preview
+function readControls() {
+  return {
+    width_mm: +$('width_mm').value,
+    relief_height: +$('relief_height').value,
+    base_thickness: +$('base_thickness').value,
+    subdivisions: +$('subdivisions').value,
+    invert_depth: mode === 'engrave',
+    curve,
+    black_point: +$('black_point').value,
+    smooth: +$('smooth').value,
+    remove_base: $('remove_base').checked,
+    remove_threshold: 0.01,
+    closed_back: true,
+    bend_mode: bend,
+    bend_axis: axis,
+    bend_angle: +$('bend_angle').value,
+  };
+}
+
+let mode = 'emboss';
+let curve = 'linear';
+let bend = 'off';
+let axis = 'xz';
+
+function parseMesh(buffer) {
+  const magic = new TextDecoder().decode(new Uint8Array(buffer, 0, 4));
+  if (magic !== 'RLF1') throw new Error('bad payload');
+  const dv = new DataView(buffer);
+  const jsonLen = dv.getUint32(4, true);
+  const head = JSON.parse(new TextDecoder().decode(new Uint8Array(buffer, 8, jsonLen)));
+  let off = 8 + jsonLen;
+  const n = head.vertices, m = head.triangles * 3;
+  const positions = new Float32Array(buffer.slice(off, off + n * 12)); off += n * 12;
+  const uvs = new Float32Array(buffer.slice(off, off + n * 8)); off += n * 8;
+  const indices = new Uint32Array(buffer.slice(off, off + m * 4));
+  return { head, positions, uvs, indices };
+}
+
+let inFlight = null;
+let pending = null;
+
+async function refresh({ frame = false } = {}) {
+  if (!state.imageId) return;
+  const body = {
+    image_id: state.imageId, ...readControls(),
+    subdivisions: state.previewSubdiv,        // preview grid, not the export slider
+    preview_subdivisions: state.previewSubdiv,
+  };
+  const t0 = performance.now();
+  $('busy').hidden = false;
+  try {
+    if (inFlight) inFlight.abort();
+    const ctl = new AbortController();
+    inFlight = ctl;
+    const res = await fetch('/api/preview', {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(body), signal: ctl.signal,
+    });
+    if (inFlight === ctl) inFlight = null;
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      $('stats').textContent = '⚠ ' + (err.error || res.statusText);
+      return;
+    }
+    const { head, positions, uvs, indices } = parseMesh(await res.arrayBuffer());
+    state.lastMeshMs = performance.now() - t0;
+
+    // Build a fresh geometry: reusing one while buffer sizes change leaves
+    // stale GPU buffers behind and renders stale triangles.
+    const geo = new THREE.BufferGeometry();
+    geo.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+    geo.setAttribute('uv', new THREE.BufferAttribute(uvs, 2));
+    geo.setIndex(new THREE.BufferAttribute(indices, 1));
+    geo.computeVertexNormals();
+    geo.computeBoundingBox();
+    geo.computeBoundingSphere();
+
+    // centre the plate so orbiting feels natural
+    const c = geo.boundingBox.getCenter(new THREE.Vector3());
+    geo.translate(-c.x, -c.y, 0);
+
+    const old = mesh.geometry;
+    mesh.geometry = geo;
+    if (old) old.dispose();
+    mesh.visible = true;
+
+    if (frame) frameCamera(head);
+
+    $('stats').textContent =
+      `${head.vertices.toLocaleString()} verts · ${head.triangles.toLocaleString()} tris\n` +
+      `${head.extents[0].toFixed(1)} × ${head.extents[1].toFixed(1)} mm · ` +
+      `height ${(head.z_max - head.z_min).toFixed(2)} mm\n` +
+      `grid ${head.cols} × ${head.rows} · ${Math.round(state.lastMeshMs)} ms`;
+    $('exportInfo').textContent =
+      `export ${(+$('subdivisions').value).toLocaleString()} px`;
+  } catch (err) {
+    if (err.name !== 'AbortError') console.error(err);
+  } finally {
+    if (!inFlight) $('busy').hidden = true;
+  }
+}
+
+function schedule({ frame = false } = {}) {
+  clearTimeout(pending);
+  pending = setTimeout(() => refresh({ frame }), 70);
+}
+
+// ---------------------------------------------------------------- controls
+function bindPair(numId, rangeId, onChange) {
+  const num = $(numId), range = $(rangeId);
+  const sync = (v, from) => {
+    const val = Math.min(+num.max, Math.max(+num.min, +v || 0));
+    num.value = val; range.value = val;
+    onChange && onChange(val, from);
+  };
+  num.addEventListener('input', (e) => sync(e.target.value, 'num'));
+  range.addEventListener('input', (e) => sync(e.target.value, 'range'));
+  // keep the two roughly in sync on change (avoid fighting during typing)
+  range.addEventListener('change', () => schedule());
+  num.addEventListener('change', () => schedule());
+}
+
+['width_mm', 'relief_height', 'base_thickness', 'subdivisions', 'bend_angle', 'preview_res', 'black_point', 'smooth'].forEach((id) =>
+  bindPair(id, id + '_r'));
+
+['width_mm', 'relief_height', 'base_thickness', 'subdivisions', 'bend_angle'].forEach((id) =>
+  $(id + '_r').addEventListener('input', () => schedule()));
+
+// preview resolution only rebuilds the viewport mesh (no export impact)
+const applyPreviewRes = (v) => {
+  const r = Math.max(128, Math.min(2048, Math.round(+v || 256)));
+  state.previewSubdiv = r;
+  $('preview_res').value = r;
+  $('preview_res_r').value = r;
+  $('previewHint').textContent = r > 1024
+    ? `Grid nodes on the long edge — ${r} px is very heavy (≈${(r * r * 0.75 / 1e6).toFixed(1)} M verts).`
+    : r > 512
+      ? `Grid nodes on the long edge — ${r} px may feel sluggish while dragging.`
+      : 'Grid nodes on the long edge. Browser-side; export uses the value below.';
+  schedule();
+};
+$('preview_res').addEventListener('input', (e) => applyPreviewRes(e.target.value));
+$('preview_res_r').addEventListener('input', (e) => applyPreviewRes(e.target.value));
+
+// export resolution: warn about size, and constrain formats that cannot scale
+function updateExportHint() {
+  const sub = +$('subdivisions').value;
+  const approxTris = 2 * sub * sub * 0.75;
+  const bytes = approxTris * 50;
+  const gb = bytes / 1073741824;
+  const big = sub > 2048;
+  $('exportHint').textContent = sub >= 4096
+    ? `STL ≈ ${gb.toFixed(1)} GB — OBJ/GLB unavailable above 2048.`
+    : `STL up to 8192 · OBJ/GLB up to 2048.${sub > 2048 ? ' Above 2048 only STL is offered.' : ''}`;
+  document.querySelectorAll('#export button').forEach((b) => {
+    if (b.dataset.fmt === 'stl') return;
+    b.disabled = big;
+    b.title = big ? 'Use STL above 2048 px' : '';
+  });
+  $('exportInfo').textContent = `export ${sub.toLocaleString()} px`;
+}
+$('subdivisions').addEventListener('change', updateExportHint);
+$('subdivisions').addEventListener('input', updateExportHint);
+updateExportHint();
+
+$('remove_base').addEventListener('change', () => {
+  $('baseField').style.opacity = $('remove_base').checked ? 0.4 : 1;
+  schedule();
+});
+
+function segment(container, attr, cb) {
+  container.querySelectorAll('button').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      container.querySelectorAll('button').forEach((b) => b.classList.remove('on'));
+      btn.classList.add('on');
+      cb(btn.dataset[attr]);
+      schedule();
+    });
+  });
+}
+segment($('mode'), 'mode', (v) => { mode = v; });
+segment($('curve'), 'curve', (v) => { curve = v; });
+segment($('bend'), 'bend', (v) => {
+  bend = v;
+  $('bendExtra').hidden = v === 'off';
+});
+segment($('axis'), 'axis', (v) => { axis = v; });
+
+$('wire').addEventListener('click', (e) => {
+  state.wireframe = !state.wireframe;
+  material.wireframe = state.wireframe;
+  e.currentTarget.classList.toggle('on', state.wireframe);
+});
+$('spin').addEventListener('click', (e) => {
+  state.spin = !state.spin;
+  controls.autoRotate = state.spin;
+  controls.autoRotateSpeed = 1.6;
+  e.currentTarget.classList.toggle('on', state.spin);
+});
+$('tex').addEventListener('click', (e) => {
+  state.textured = !state.textured;
+  material.map = state.textured ? texture : null;
+  material.needsUpdate = true;
+  e.currentTarget.classList.toggle('on', state.textured);
+});
+
+document.querySelectorAll('[data-preset]').forEach((btn) => {
+  btn.addEventListener('click', () => {
+    const low = btn.dataset.preset === 'low';
+    $('relief_height').value = $('relief_height_r').value = low ? 3 : 6;
+    schedule();
+  });
+});
+
+$('reset').addEventListener('click', () => {
+  const d = { width_mm: 60, relief_height: 6, base_thickness: 1, subdivisions: 1024, bend_angle: 60, black_point: 0, smooth: 0 };
+  for (const [k, v] of Object.entries(d)) { $(k).value = v; $(k + '_r').value = v; }
+  mode = 'emboss'; curve = 'linear'; bend = 'off'; axis = 'xz';
+  $('remove_base').checked = false;
+  $('bendExtra').hidden = true;
+  $('baseField').style.opacity = 1;
+  const set = (id, val) => $(id).querySelectorAll('button').forEach((b) =>
+    b.classList.toggle('on', b.dataset.mode === val || b.dataset.curve === val ||
+      b.dataset.bend === val || b.dataset.axis === val));
+  set('mode', 'emboss'); set('curve', 'linear'); set('bend', 'off'); set('axis', 'xz');
+  schedule({ frame: true });
+});
+
+// ---------------------------------------------------------------- image
+async function useFile(file) {
+  const buf = await file.arrayBuffer();
+  const res = await fetch('/api/upload', { method: 'POST', body: buf });
+  const info = await res.json();
+  if (info.error) { alert(info.error); return; }
+  state.imageId = info.id;
+  $('imgInfo').textContent = `${info.width} × ${info.height} px · depth ${info.min.toFixed(2)}–${info.max.toFixed(2)}`;
+  const thumb = $('thumb');
+  thumb.src = URL.createObjectURL(file);
+  thumb.hidden = false;
+  $('dropText').hidden = true;
+
+  texture = new THREE.TextureLoader().load(URL.createObjectURL(file));
+  texture.colorSpace = THREE.SRGBColorSpace;
+  material.map = state.textured ? texture : null;
+  material.needsUpdate = true;
+
+  refresh({ frame: true });
+}
+
+const drop = $('drop');
+$('file').addEventListener('change', (e) => e.target.files[0] && useFile(e.target.files[0]));
+['dragenter', 'dragover'].forEach((ev) => drop.addEventListener(ev, (e) => {
+  e.preventDefault(); drop.classList.add('over');
+}));
+['dragleave', 'drop'].forEach((ev) => drop.addEventListener(ev, (e) => {
+  e.preventDefault(); drop.classList.remove('over');
+}));
+drop.addEventListener('drop', (e) => {
+  const f = e.dataTransfer.files[0];
+  if (f) useFile(f);
+});
+
+// ---------------------------------------------------------------- export
+document.querySelectorAll('#export button').forEach((btn) => {
+  btn.addEventListener('click', async () => {
+    if (!state.imageId) return;
+    const fmt = btn.dataset.fmt;
+    const btns = document.querySelectorAll('#export button');
+    btns.forEach((b) => (b.disabled = true));
+    const old = btn.textContent;
+    btn.textContent = 'Building…';
+    try {
+      const res = await fetch('/api/export', {
+        method: 'POST', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ image_id: state.imageId, format: fmt, ...readControls() }),
+      });
+      if (!res.ok) throw new Error((await res.json()).error || res.statusText);
+      const blob = await res.blob();
+      const name = (res.headers.get('content-disposition') || '').match(/filename="([^"]+)"/)?.[1]
+        || `relief.${fmt}`;
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(blob);
+      a.download = name;
+      a.click();
+      setTimeout(() => URL.revokeObjectURL(a.href), 4000);
+      btn.textContent = 'Saved ✓';
+      setTimeout(() => (btn.textContent = old), 1200);
+    } catch (err) {
+      alert('Export failed: ' + err.message);
+      btn.textContent = old;
+    } finally {
+      btns.forEach((b) => (b.disabled = false));
+      updateExportHint();
+    }
+  });
+});
+
+// ---------------------------------------------------------------- quit
+$('quit').addEventListener('click', async (e) => {
+  if (!confirm('Stop Relief Studio? The local server will shut down.')) return;
+  const btn = e.currentTarget;
+  btn.disabled = true;
+  btn.textContent = 'Stopping…';
+  try { await fetch('/api/quit', { method: 'POST' }); } catch (_) {}
+  await new Promise((r) => setTimeout(r, 400));
+  document.body.innerHTML =
+    '<div class="bye"><div><strong>Relief Studio stopped</strong>' +
+    'You can close this tab. Relaunch the app to start it again.</div></div>';
+  controls.dispose();
+});
+
+// ---------------------------------------------------------------- demo map
+function demoDepth() {
+  const N = 768, c = document.createElement('canvas');
+  c.width = c.height = N;
+  const g = c.getContext('2d');
+  const grd = g.createRadialGradient(N * 0.5, N * 0.42, N * 0.02, N * 0.5, N * 0.42, N * 0.55);
+  grd.addColorStop(0, '#ffffff');
+  grd.addColorStop(0.55, '#b9b9b9');
+  grd.addColorStop(1, '#000000');
+  g.fillStyle = grd; g.fillRect(0, 0, N, N);
+  // a few "carved" features so the preview reads as a relief
+  g.globalAlpha = 0.85; g.fillStyle = '#ffffff';
+  g.beginPath(); g.ellipse(N * 0.36, N * 0.45, N * 0.07, N * 0.10, 0, 0, 7); g.fill();
+  g.beginPath(); g.ellipse(N * 0.64, N * 0.45, N * 0.07, N * 0.10, 0, 0, 7); g.fill();
+  g.beginPath(); g.ellipse(N * 0.50, N * 0.66, N * 0.10, N * 0.05, 0, 0, 7); g.fill();
+  g.globalAlpha = 1; g.fillStyle = '#000';
+  g.fillRect(0, N * 0.92, N, N * 0.08);
+  return new Promise((res) => c.toBlob((b) => res(new File([b], 'demo-depth.png', { type: 'image/png' })), 'image/png'));
+}
+
+// ---------------------------------------------------------------- loop
+function tick() {
+  requestAnimationFrame(tick);
+  controls.update();
+  renderer.render(scene, camera);
+}
+tick();
+
+(async function boot() {
+  await fetch('/api/defaults').then((r) => r.json()).catch(() => ({}));
+  useFile(await demoDepth());
+})();

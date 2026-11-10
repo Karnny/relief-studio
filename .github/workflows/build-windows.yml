@@ -1,0 +1,67 @@
+name: build-windows
+
+# Builds dist/ReliefStudio.exe and uploads it as the artifact
+# "ReliefStudio-windows-x64". Works whether these files sit at the repository
+# root or inside a relief/ subfolder.
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Locate the project
+        shell: bash
+        run: |
+          if   [ -f ReliefStudio.spec ];        then echo "DIR=."      >> "$GITHUB_ENV"
+          elif [ -f relief/ReliefStudio.spec ]; then echo "DIR=relief" >> "$GITHUB_ENV"
+          else echo "ReliefStudio.spec not found in the checkout" && exit 1
+          fi
+
+      - name: Install dependencies
+        working-directory: ${{ env.DIR }}
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install numpy pillow pyinstaller
+
+      - name: Build
+        working-directory: ${{ env.DIR }}
+        run: python -m PyInstaller ReliefStudio.spec --noconfirm --clean
+
+      - name: Smoke test the executable
+        working-directory: ${{ env.DIR }}
+        shell: pwsh
+        run: |
+          $p = Start-Process -FilePath "dist\ReliefStudio.exe" `
+                             -ArgumentList "--port","8791","--no-browser" -PassThru
+          try {
+            $ok = $false
+            foreach ($i in 1..20) {
+              Start-Sleep -Seconds 2
+              try {
+                $r = Invoke-WebRequest "http://127.0.0.1:8791/app.js" -UseBasicParsing -TimeoutSec 5
+                if ($r.StatusCode -eq 200) { $ok = $true; break }
+              } catch { }
+            }
+            if (-not $ok) { throw "server did not answer on 8791" }
+            $t = Invoke-WebRequest "http://127.0.0.1:8791/vendor/three.module.js" -UseBasicParsing -TimeoutSec 20
+            if ($t.StatusCode -ne 200) { throw "bundled three.js missing" }
+            Write-Host "smoke test passed"
+          } finally {
+            Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue
+          }
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ReliefStudio-windows-x64
+          path: ${{ env.DIR }}/dist/ReliefStudio.exe
+          if-no-files-found: error
