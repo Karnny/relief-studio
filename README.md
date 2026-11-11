@@ -128,9 +128,10 @@ Neither affects the geometry of a rectangular plate produced from a depth map.
 python -m unittest discover -s tests -v
 ```
 
-Nine stdlib tests (~2 s; only numpy and pillow are needed): the 512-grid `demo-depth.png`
-STL hash canary (byte-identical across platforms), 16-bit depth decode precision, and the
-GUI server's `/api/hello` / single-instance probing. CI runs them before every build.
+Twelve stdlib tests (~4 s; only numpy and pillow are needed): the 512-grid `demo-depth.png`
+STL hash canary (byte-identical across platforms), 16-bit depth decode precision, the
+GUI server's `/api/hello` / single-instance probing, and aborted-client handling. CI runs
+them before every build.
 
 
 ## macOS app

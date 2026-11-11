@@ -32,7 +32,7 @@ TEMP_DIR = tempfile.gettempdir()
 
 # Depth maps uploaded in this session: id -> float32 array (row 0 = top)
 APP_ID = "relief-studio"
-APP_VERSION = "1.0.0"
+APP_VERSION = "1.0.1"
 SERVER: "ThreadingHTTPServer | None" = None   # set in serve(), used by /api/quit
 UPLOADS: dict[str, np.ndarray] = {}
 SOURCES: dict[str, bytes] = {}          # original image bytes, for the preview texture
@@ -86,6 +86,19 @@ def pack_mesh(mesh: dict) -> bytes:
             + pos.tobytes() + uv.tobytes() + idx.tobytes())
 
 
+class ClientDisconnected(Exception):
+    """The peer went away mid-response (tab closed, preview request superseded).
+
+    Browsers abort the previous live-preview fetch whenever a slider moves and kill
+    every in-flight socket when the tab closes or reloads, so this is normal traffic
+    for this GUI - never an error worth printing.
+    """
+
+
+CONNECTION_ERRORS = (BrokenPipeError, ConnectionAbortedError, ConnectionResetError,
+                     TimeoutError)
+
+
 class Handler(BaseHTTPRequestHandler):
     server_version = "relief-gui"
 
@@ -94,13 +107,17 @@ class Handler(BaseHTTPRequestHandler):
 
     # ---- helpers ---------------------------------------------------------
     def _send(self, code: int, ctype: str, payload: bytes, extra: dict | None = None):
-        self.send_response(code)
-        self.send_header("Content-Type", ctype)
-        self.send_header("Content-Length", str(len(payload)))
-        for k, v in (extra or {}).items():
-            self.send_header(k, v)
-        self.end_headers()
-        self.wfile.write(payload)
+        try:
+            self.send_response(code)
+            self.send_header("Content-Type", ctype)
+            self.send_header("Content-Length", str(len(payload)))
+            for k, v in (extra or {}).items():
+                self.send_header(k, v)
+            self.end_headers()
+            self.wfile.write(payload)
+        except CONNECTION_ERRORS as exc:
+            self.close_connection = True
+            raise ClientDisconnected(*exc.args) from exc
 
     def _json(self, code: int, obj: dict):
         self._send(code, "application/json", json.dumps(obj).encode())
@@ -111,6 +128,12 @@ class Handler(BaseHTTPRequestHandler):
 
     # ---- routes ----------------------------------------------------------
     def do_GET(self):
+        try:
+            self._get()
+        except ClientDisconnected:
+            self.close_connection = True
+
+    def _get(self):
         path = self.path.split("?")[0]
         if path == "/":
             path = "/index.html"
@@ -147,10 +170,17 @@ class Handler(BaseHTTPRequestHandler):
             if path == "/api/quit":
                 return self._quit()
             self._send(404, "text/plain", b"not found")
-        except Exception as exc:                      # pragma: no cover
+        except ClientDisconnected:                     # client hung up mid-response
+            self.close_connection = True
+        except CONNECTION_ERRORS:                      # e.g. aborted /api/export stream
+            self.close_connection = True
+        except Exception as exc:                       # real bugs: log and answer if possible
             import traceback
             traceback.print_exc()
-            self._json(500, {"error": str(exc)})
+            try:
+                self._json(500, {"error": str(exc)})
+            except ClientDisconnected:
+                self.close_connection = True
 
     # ---- api -------------------------------------------------------------
     def _upload(self):
@@ -242,6 +272,22 @@ class Handler(BaseHTTPRequestHandler):
                 pass
 
 
+class ReliefServer(ThreadingHTTPServer):
+    """HTTP server that treats aborted client connections as normal traffic.
+
+    A closing tab or a superseded preview request resets the socket while the
+    request is still being parsed or answered. socketserver prints a full
+    traceback for every such reset (``ConnectionResetError`` WinError 10054 on
+    read, ``ConnectionAbortedError`` WinError 10053 on write); this server keeps
+    the console clean and only reports genuine handler bugs.
+    """
+
+    def handle_error(self, request, client_address):
+        if isinstance(sys.exc_info()[1], CONNECTION_ERRORS):
+            return
+        super().handle_error(request, client_address)
+
+
 def info(message: str) -> None:
     """stdout is None in a windowed Windows build; never let a log line crash us."""
     stream = sys.stdout
@@ -324,7 +370,7 @@ def serve(port: int, open_browser: bool) -> None:
     last: Exception | None = None
     for candidate in range(port, port + 12):
         try:
-            srv = ThreadingHTTPServer(("127.0.0.1", candidate), Handler)
+            srv = ReliefServer(("127.0.0.1", candidate), Handler)
             break
         except OSError as exc:                      # port in use -> try the next one
             last = exc

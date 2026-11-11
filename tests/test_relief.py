@@ -11,14 +11,14 @@ arm64, Windows x64). That hash is what proved the port is deterministic.
 """
 from __future__ import annotations
 
+import contextlib
 import hashlib
+import io
 import os
 import sys
 import tempfile
 import threading
 import unittest
-
-from http.server import ThreadingHTTPServer
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if ROOT not in sys.path:
@@ -108,7 +108,7 @@ class ServerTest(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-        cls.srv = ThreadingHTTPServer(("127.0.0.1", 0), relief_gui.Handler)
+        cls.srv = relief_gui.ReliefServer(("127.0.0.1", 0), relief_gui.Handler)
         cls.port = cls.srv.server_address[1]
         cls.thread = threading.Thread(target=cls.srv.serve_forever, daemon=True)
         cls.thread.start()
@@ -155,6 +155,82 @@ class ServerTest(unittest.TestCase):
         # 8790 is expected to be free in CI and on a dev box; pick a port range
         # far from the default and probe from there.
         self.assertIsNone(relief_gui.find_running(18900))
+
+
+class DisconnectTest(unittest.TestCase):
+    """Closing a tab or dragging a slider aborts requests; that must stay quiet.
+
+    The console used to fill with socketserver tracebacks (WinError 10053 on the
+    preview write, then a second one from the 500 path writing to the dead socket).
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        cls.srv = relief_gui.ReliefServer(("127.0.0.1", 0), relief_gui.Handler)
+        cls.port = cls.srv.server_address[1]
+        cls.thread = threading.Thread(target=cls.srv.serve_forever, daemon=True)
+        cls.thread.start()
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.srv.shutdown()
+        cls.srv.server_close()
+        cls.thread.join(timeout=5)
+
+    def test_connection_errors_are_not_reported(self):
+        buf = io.StringIO()
+        try:
+            raise ConnectionResetError(10054, "forcibly closed")
+        except ConnectionResetError:
+            with contextlib.redirect_stderr(buf):
+                self.srv.handle_error(None, ("127.0.0.1", 0))
+        self.assertEqual(buf.getvalue(), "")
+
+    def test_real_bugs_are_still_reported(self):
+        buf = io.StringIO()
+        try:
+            raise ValueError("a bug")
+        except ValueError:
+            with contextlib.redirect_stderr(buf):
+                self.srv.handle_error(None, ("127.0.0.1", 0))
+        self.assertIn("Exception occurred during processing", buf.getvalue())
+
+    def test_aborted_preview_requests_keep_the_server_alive_and_quiet(self):
+        import json
+        import socket
+        import struct
+        import time
+        import urllib.request
+
+        demo = os.path.join(ROOT, "demo-depth.png")
+        with open(demo, "rb") as f:
+            req = urllib.request.Request(self._url("api/upload"), data=f.read(), method="POST")
+            with urllib.request.urlopen(req, timeout=30) as resp:
+                image_id = json.loads(resp.read())["id"]
+
+        body = json.dumps({"image_id": image_id, "subdivisions": 256,
+                           "preview_subdivisions": 256}).encode()
+        header = (f"POST /api/preview HTTP/1.1\r\nHost: 127.0.0.1:{self.port}\r\n"
+                  f"Content-Type: application/json\r\nContent-Length: {len(body)}\r\n"
+                  f"Connection: close\r\n\r\n").encode()
+
+        buf = io.StringIO()
+        with contextlib.redirect_stderr(buf):
+            for _ in range(6):
+                sock = socket.create_connection(("127.0.0.1", self.port), timeout=5)
+                # linger 0 -> close() sends RST instead of a clean FIN, like an aborted fetch
+                sock.setsockopt(socket.SOL_SOCKET, socket.SO_LINGER, struct.pack("ii", 1, 0))
+                sock.sendall(header + body)
+                sock.close()
+            time.sleep(1.0)          # let the request threads hit the dead sockets
+        self.assertNotIn("Traceback", buf.getvalue())
+
+        # the server keeps serving after the aborts
+        with urllib.request.urlopen(self._url("api/defaults"), timeout=5) as resp:
+            self.assertEqual(resp.status, 200)
+
+    def _url(self, path: str) -> str:
+        return f"http://127.0.0.1:{self.port}/{path}"
 
 
 if __name__ == "__main__":
