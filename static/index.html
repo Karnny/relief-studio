@@ -13,6 +13,11 @@
 <header>
   <div class="brand"><span class="dot"></span> Relief Studio <small>depth map → printable relief</small></div>
   <div class="hint">Drag to orbit · scroll to zoom · shift-drag to pan</div>
+  <div id="updateBar" hidden>
+    <span id="updateText"></span>
+    <button id="updateAction">Update</button>
+    <button id="updateDismiss" title="Hide until the next launch" aria-label="Dismiss update">&#10005;</button>
+  </div>
   <button id="quit" title="Stop the local server and close the app">Quit</button>
 </header>
 

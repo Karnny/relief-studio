@@ -17,9 +17,12 @@ import io
 import json
 import os
 import sys
+import shutil
 import tempfile
 import threading
+import time
 import unittest
+import unittest.mock
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if ROOT not in sys.path:
@@ -30,6 +33,7 @@ from PIL import Image
 
 import relief
 import relief_gui
+import updater
 
 DEMO = os.path.join(ROOT, "demo-depth.png")
 
@@ -327,6 +331,136 @@ class SculptTest(unittest.TestCase):
         self.assertEqual(relief_gui.DEFAULTS["sculpt"], [])
 
 
+class UpdaterTest(unittest.TestCase):
+    """Version comparison, release parsing, staging and the exe swap."""
+
+    def test_version_parse_and_compare(self):
+        self.assertEqual(updater.parse_version("v1.5.0"), (1, 5, 0))
+        self.assertEqual(updater.parse_version("1.5"), (1, 5, 0))
+        self.assertEqual(updater.parse_version("2"), (2, 0, 0))
+        self.assertTrue(updater.is_newer("1.5.0", "1.4.9"))
+        self.assertFalse(updater.is_newer("1.4.9", "1.5.0"))
+        self.assertTrue(updater.is_newer("2.0.0", "1.99.99"))
+        with self.assertRaises(ValueError):
+            updater.parse_version("latest")
+        with self.assertRaises(ValueError):
+            updater.parse_version("1.x.0")
+
+    def test_parse_release_requires_the_exe_asset(self):
+        data = {"tag_name": "v1.5.0", "html_url": "https://example.test/r",
+                "body": "notes",
+                "assets": [{"name": "ReliefStudio.exe", "size": 10,
+                            "browser_download_url": "https://example.test/a.exe"}]}
+        release = updater.parse_release(data)
+        self.assertEqual(release["latest"], "1.5.0")
+        self.assertIsNone(release["sha256"])          # no .sha256 asset published
+        with self.assertRaises(updater.UpdateError):
+            updater.parse_release({"tag_name": "v1.5.0", "assets": []})
+
+    def test_parse_sha_text(self):
+        digest = "ab" * 32
+        self.assertEqual(updater.parse_sha_text(f"{digest}  ReliefStudio.exe"), digest)
+        with self.assertRaises(updater.UpdateError):
+            updater.parse_sha_text("there is no hash here")
+
+    def test_download_is_verified_and_staged(self):
+        payload = b"fake-exe-bytes-for-the-updater-test"
+        sha = hashlib.sha256(payload).hexdigest()
+        release = {"latest": "1.6.0", "asset_url": "https://example.test/a.exe",
+                   "sha256": sha, "page_url": "https://example.test/r"}
+        root = tempfile.mkdtemp(prefix="relief-update-test-")
+        try:
+            with unittest.mock.patch.object(updater, "fetch_bytes", lambda *a, **k: payload):
+                staged = updater.download_to_staging(release, root=root)
+            self.assertEqual(staged["bytes"], len(payload))
+            with open(staged["path"], "rb") as f:
+                self.assertEqual(f.read(), payload)
+            pending = updater.pending_update("1.5.0", root=root)
+            self.assertEqual(pending["version"], "1.6.0")
+            self.assertIsNone(updater.pending_update("1.6.0", root=root))
+            self.assertIsNone(updater.pending_update("1.7.0", root=root))
+            bad = dict(release, sha256="0" * 64)
+            with self.assertRaises(updater.UpdateError):
+                with unittest.mock.patch.object(updater, "fetch_bytes", lambda *a, **k: payload):
+                    updater.download_to_staging(bad, root=root)
+        finally:
+            shutil.rmtree(root, ignore_errors=True)
+
+    def test_swap_executable_moves_the_old_exe_aside(self):
+        root = tempfile.mkdtemp(prefix="relief-swap-test-")
+        try:
+            exe = os.path.join(root, "ReliefStudio.exe")
+            staged = os.path.join(root, "ReliefStudio.exe.new")
+            with open(exe, "wb") as f:
+                f.write(b"old")
+            with open(staged, "wb") as f:
+                f.write(b"new")
+            backup = updater.swap_executable(exe, staged)
+            with open(exe, "rb") as f:
+                self.assertEqual(f.read(), b"new")
+            with open(backup, "rb") as f:
+                self.assertEqual(f.read(), b"old")
+            self.assertFalse(os.path.exists(staged))
+        finally:
+            shutil.rmtree(root, ignore_errors=True)
+
+    def test_child_environment_strips_pyinstaller_variables(self):
+        # inherited _PYI_* vars make a relaunched one-file exe boot in "child"
+        # mode against the old (possibly deleted) extraction dir -> silent death
+        with unittest.mock.patch.dict(os.environ, {
+            "_PYI_APPLICATION_HOME_DIR": "C:/old/_MEI123",
+            "_PYI_PARENT_PROCESS_LEVEL": "1",
+            "_PYI_ARCHIVE_FILE": "C:/old/app.pyz",
+            "PYINSTALLER_RESET_ENVIRONMENT": "0",
+            "PATH": "keep-me",
+        }, clear=False):
+            env = updater.child_environment()
+        self.assertFalse([k for k in env if k.startswith("_PYI_")])
+        self.assertEqual(env["PYINSTALLER_RESET_ENVIRONMENT"], "1")
+        self.assertEqual(env["PATH"], "keep-me")
+
+    def test_stale_restart_helpers_are_cleaned_up(self):
+        root = tempfile.mkdtemp(prefix="relief-helper-test-")
+        try:
+            stale = os.path.join(root, "relief-restart-abc123.cmd")
+            fresh = os.path.join(root, "relief-restart-fresh.cmd")
+            other = os.path.join(root, "something-else.cmd")
+            for path in (stale, fresh, other):
+                with open(path, "w", encoding="ascii") as f:
+                    f.write("@echo off\r\n")
+            old = 7200
+            os.utime(stale, (time.time() - old, time.time() - old))
+            os.utime(other, (time.time() - old, time.time() - old))
+            with unittest.mock.patch.object(updater.tempfile, "gettempdir", lambda: root):
+                removed = updater.cleanup_stale_helpers(max_age_s=3600)
+            self.assertEqual(removed, 1)
+            self.assertFalse(os.path.exists(stale))
+            self.assertTrue(os.path.exists(fresh))
+            self.assertTrue(os.path.exists(other))
+        finally:
+            shutil.rmtree(root, ignore_errors=True)
+
+    def test_restart_helper_is_detached_safe(self):
+        # A detached cmd cannot run tasklist/pipes reliably; helper must only use
+        # builtins + ping, then start the exe by its full path.
+        exe = r"C:\Tools\Relief Studio\ReliefStudio.exe"
+        script = relief_gui.restart_helper_script(exe)
+        self.assertIn('start "" "C:\\Tools\\Relief Studio\\ReliefStudio.exe"', script)
+        self.assertIn("ping -n 5", script)
+        self.assertNotIn("tasklist", script)
+        self.assertNotIn("|", script)
+
+    def test_update_check_turns_off_install_when_not_frozen(self):
+        fake = {"latest": "9.9.9", "update_available": True, "can_install": True,
+                "page_url": "", "notes": "", "release": {"latest": "9.9.9"}}
+        with unittest.mock.patch.object(updater, "check_update", lambda *a, **k: dict(fake)):
+            relief_gui.UPDATE_CACHE.update({"at": 0.0, "data": None})
+            info = relief_gui.update_check(force=True)
+        self.assertTrue(info["update_available"])
+        self.assertFalse(info["can_install"])          # source runs cannot self-install
+        self.assertFalse(info["install_supported"])
+
+
 class DepthDecodeTest(unittest.TestCase):
     def test_16bit_png_keeps_full_precision(self):
         """The old .convert('RGB') bug clipped everything above 255 to white."""
@@ -492,6 +626,19 @@ class ServerTest(unittest.TestCase):
         # 8790 is expected to be free in CI and on a dev box; pick a port range
         # far from the default and probe from there.
         self.assertIsNone(relief_gui.find_running(18900))
+
+    def test_update_endpoint(self):
+        import urllib.request
+
+        fake = {"current": relief_gui.APP_VERSION, "latest": "9.9.9",
+                "update_available": True, "can_install": False,
+                "page_url": "https://example.test/r", "notes": "",
+                "error": None, "install_supported": False}
+        with unittest.mock.patch.object(relief_gui, "update_check", lambda force=False: fake):
+            with urllib.request.urlopen(self._url("api/update"), timeout=5) as resp:
+                body = json.loads(resp.read().decode())
+        self.assertTrue(body["update_available"])
+        self.assertEqual(body["latest"], "9.9.9")
 
 
 class DisconnectTest(unittest.TestCase):

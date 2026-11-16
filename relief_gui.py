@@ -14,9 +14,11 @@ import json
 import math
 import os
 import struct
+import subprocess
 import sys
 import tempfile
 import threading
+import time
 import traceback
 import uuid
 import webbrowser
@@ -25,6 +27,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import numpy as np
 
 import relief
+import updater
 
 FROZEN = bool(getattr(sys, "frozen", False))          # PyInstaller one-file build
 BASE_DIR = getattr(sys, "_MEIPASS", os.path.dirname(os.path.abspath(__file__)))
@@ -33,11 +36,19 @@ TEMP_DIR = tempfile.gettempdir()
 
 # Depth maps uploaded in this session: id -> float32 array (row 0 = top)
 APP_ID = "relief-studio"
-APP_VERSION = "1.4.1"
+APP_VERSION = "1.5.0"
 SERVER: "ThreadingHTTPServer | None" = None   # set in serve(), used by /api/quit
 UPLOADS: dict[str, np.ndarray] = {}
 SOURCES: dict[str, bytes] = {}          # original image bytes, for the preview texture
 HAS_PNG = True
+
+# Update feed: GitHub Releases by default; RELIEF_UPDATE_API (or --update-api)
+# points it at a local fake release for testing.
+UPDATE_API = os.environ.get("RELIEF_UPDATE_API", updater.DEFAULT_API)
+UPDATE_INSECURE = os.environ.get("RELIEF_UPDATE_INSECURE", "") == "1"
+UPDATE_TTL = 6 * 3600
+UPDATE_CACHE: dict = {"at": 0.0, "data": None}
+UPDATE_LOCK = threading.Lock()
 
 PREVIEW_MAX = 2048     # browser-side cap; export is not capped
 EXPORT_MAX = 8192
@@ -108,6 +119,71 @@ def params_from_json(body: dict) -> relief.ReliefParams:
         bend_axis=str(d["bend_axis"]), bend_angle=float(d["bend_angle"]),
         tilt_deg=float(d["tilt_deg"]), yaw_deg=float(d["yaw_deg"]),
         roll_deg=float(d["roll_deg"]), sculpt=sanitize_sculpt(d.get("sculpt")),
+    )
+
+
+# ---------------------------------------------------------------- updates
+def _frozen_install_supported() -> bool:
+    """Auto-install only makes sense for the packaged Windows exe."""
+    return FROZEN and sys.platform == "win32"
+
+
+def update_check(force: bool = False) -> dict:
+    """Query the release feed (cached for 6 h unless force=True)."""
+    now = time.time()
+    with UPDATE_LOCK:
+        cached = UPDATE_CACHE["data"]
+        if not force and cached and now - UPDATE_CACHE["at"] < UPDATE_TTL:
+            return cached
+    try:
+        data = updater.check_update(APP_VERSION, UPDATE_API, insecure=UPDATE_INSECURE)
+        data["can_install"] = bool(data["update_available"] and data.get("can_install")
+                                   and _frozen_install_supported())
+        if not data["update_available"]:
+            data["release"] = None
+    except Exception as exc:                       # offline / rate limit / bad feed
+        data = {"current": APP_VERSION, "latest": None, "update_available": False,
+                "can_install": False, "page_url": "", "notes": "",
+                "error": str(exc), "release": None}
+    data["install_supported"] = _frozen_install_supported()
+    data["checked_at"] = now
+    with UPDATE_LOCK:
+        UPDATE_CACHE["at"] = now
+        UPDATE_CACHE["data"] = data
+    return data
+
+
+def update_download() -> dict:
+    """Download + verify the newest release and stage it for the next start."""
+    info = update_check(force=True)
+    if info.get("error"):
+        raise updater.UpdateError(info["error"])
+    if not info.get("update_available"):
+        raise updater.UpdateError("this build is already up to date")
+    if not _frozen_install_supported():
+        raise updater.UpdateError(
+            "automatic install is only available in the packaged Windows build")
+    release = info.get("release") or {}
+    if not release.get("sha256"):
+        raise updater.UpdateError("the release has no SHA-256 checksum asset")
+    staged = updater.download_to_staging(release, insecure=UPDATE_INSECURE)
+    return {"staged": staged["version"], "path": staged["path"], "bytes": staged["bytes"],
+            "sha256": staged["sha256"], "restart_required": True}
+
+
+def restart_helper_script(exe: str) -> str:
+    """Batch file that waits briefly for this process to exit, then starts the exe.
+
+    Deliberately builtins + ``ping`` only: inside a detached ``cmd`` the external
+    console tools (``tasklist``) produced no output, and a piped liveness probe
+    hung forever, so the helper never reached ``start``. A fixed ping delay is
+    enough because the server shutdown is immediate.
+    """
+    return (
+        "@echo off\r\n"
+        "ping -n 5 127.0.0.1 >nul\r\n"
+        f'start "" "{exe}"\r\n'
+        'del "%~f0" >nul 2>nul\r\n'
     )
 
 
@@ -183,6 +259,8 @@ class Handler(BaseHTTPRequestHandler):
             path = "/index.html"
         if path == "/api/hello":
             return self._json(200, {"app": APP_ID, "version": APP_VERSION})
+        if path == "/api/update":
+            return self._update()
         if path == "/api/defaults":
             return self._json(200, {"defaults": DEFAULTS,
                                     "images": [{"id": k, "width": int(v.shape[1]),
@@ -213,6 +291,10 @@ class Handler(BaseHTTPRequestHandler):
                 return self._source()
             if path == "/api/hello":
                 return self._json(200, {"app": APP_ID, "version": APP_VERSION})
+            if path == "/api/update/download":
+                return self._update_download()
+            if path == "/api/restart":
+                return self._restart()
             if path == "/api/quit":
                 return self._quit()
             self._send(404, "text/plain", b"not found")
@@ -251,6 +333,42 @@ class Handler(BaseHTTPRequestHandler):
         srv = SERVER
         if srv is not None:
             threading.Thread(target=srv.shutdown, daemon=True).start()
+
+    def _update(self):
+        self._json(200, update_check(force="force=1" in self.path))
+
+    def _update_download(self):
+        try:
+            result = update_download()
+        except updater.UpdateError as exc:
+            return self._json(400, {"error": str(exc)})
+        self._json(200, result)
+
+    def _restart(self):
+        if not _frozen_install_supported():
+            return self._json(400, {"error": "restart is only available in the packaged Windows app"})
+        # A detached helper waits briefly for this process to exit, then starts
+        # the app again; if an update is staged, the fresh start swaps it in and
+        # relaunches into the new build. Keep the helper to builtins + ping:
+        # external console tools like tasklist misbehave in a detached cmd, and a
+        # piped `tasklist | find` probe hung forever.
+        exe = os.path.abspath(sys.executable)
+        helper = os.path.join(tempfile.gettempdir(),
+                              f"relief-restart-{uuid.uuid4().hex[:8]}.cmd")
+        try:
+            with open(helper, "w", encoding="ascii", newline="") as f:
+                f.write(restart_helper_script(exe))
+            kwargs = {"close_fds": True, "env": updater.child_environment()}
+            if sys.platform == "win32":
+                kwargs["creationflags"] = (getattr(subprocess, "DETACHED_PROCESS", 0) |
+                                           getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0))
+            subprocess.Popen(["cmd.exe", "/c", helper], **kwargs)
+        except OSError as exc:
+            return self._json(500, {"error": f"cannot schedule restart: {exc}"})
+        self._json(200, {"restarting": True})
+        srv = SERVER
+        if srv is not None:
+            threading.Timer(0.3, srv.shutdown).start()
 
     def _preview(self):
         body = json.loads(self._body() or b"{}")
@@ -414,6 +532,23 @@ def serve(port: int, open_browser: bool) -> None:
         if open_browser:
             webbrowser.open(running)
         return
+    # A staged update is applied before the server starts: rename this exe
+    # aside, put the new one in place, launch it and let this process exit.
+    if _frozen_install_supported():
+        try:
+            updater.cleanup_obsolete(sys.executable)
+            updater.cleanup_stale_helpers()
+            # the helper that relaunched us may still be exiting; sweep it soon
+            def _sweep():
+                updater.cleanup_stale_helpers(max_age_s=0.0)
+            t = threading.Timer(4.0, _sweep)
+            t.daemon = True
+            t.start()
+            if updater.apply_pending_update(APP_VERSION, sys.executable):
+                info("installed a staged update - starting the new build")
+                return
+        except Exception:
+            traceback.print_exc()
     last: Exception | None = None
     for candidate in range(port, port + 12):
         try:
@@ -435,10 +570,22 @@ def serve(port: int, open_browser: bool) -> None:
 
 
 def main():
+    global UPDATE_API, UPDATE_INSECURE
     ap = argparse.ArgumentParser(description="Relief GUI")
     ap.add_argument("--port", type=int, default=8765)
     ap.add_argument("--no-browser", action="store_true")
+    ap.add_argument("--check-updates", action="store_true",
+                    help="query the update feed, print the result as JSON and exit")
+    ap.add_argument("--update-api", default=UPDATE_API,
+                    help="override the release feed URL (default: GitHub releases/latest)")
+    ap.add_argument("--update-insecure", action="store_true",
+                    help="allow plain HTTP for the update feed (local testing only)")
     args = ap.parse_args()
+    UPDATE_API = args.update_api
+    UPDATE_INSECURE = UPDATE_INSECURE or args.update_insecure
+    if args.check_updates:
+        print(json.dumps(update_check(force=True), indent=2))
+        return
     try:
         serve(args.port, not args.no_browser)
     except BaseException as exc:                    # keep a windowed build diagnosable

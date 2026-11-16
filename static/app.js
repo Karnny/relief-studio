@@ -697,6 +697,68 @@ $('quit').addEventListener('click', async (e) => {
   controls.dispose();
 });
 
+// ---------------------------------------------------------------- updates
+function showUpdate(info) {
+  window.__relief.update = info;
+  $('updateText').textContent = `v${info.latest} available — you have ${info.current}`;
+  const btn = $('updateAction');
+  if (info.can_install) {
+    btn.textContent = 'Download';
+    btn.onclick = downloadUpdate;
+  } else {
+    btn.textContent = 'Release page';
+    btn.onclick = () => window.open(
+      info.page_url || 'https://github.com/Karnny/relief-studio/releases', '_blank');
+  }
+  btn.disabled = false;
+  $('updateBar').hidden = false;
+}
+
+async function checkForUpdates() {
+  try {
+    const r = await fetch('/api/update');
+    if (!r.ok) return;
+    const info = await r.json();
+    window.__relief.update = info;
+    if (info.update_available) showUpdate(info);
+  } catch (_) { /* offline is fine — try again next launch */ }
+}
+
+async function downloadUpdate() {
+  const btn = $('updateAction');
+  btn.disabled = true;
+  btn.textContent = 'Downloading…';
+  try {
+    const r = await fetch('/api/update/download', { method: 'POST' });
+    const body = await r.json();
+    if (!r.ok) throw new Error(body.error || 'download failed');
+    btn.textContent = 'Restart to update';
+    btn.disabled = false;
+    btn.onclick = restartForUpdate;
+    $('updateText').textContent = `v${body.staged} downloaded — restart to apply`;
+  } catch (err) {
+    btn.disabled = false;
+    btn.textContent = 'Download';
+    $('updateText').textContent = `Update failed: ${err.message}`;
+  }
+}
+
+async function restartForUpdate() {
+  const btn = $('updateAction');
+  btn.disabled = true;
+  btn.textContent = 'Restarting…';
+  try { await fetch('/api/restart', { method: 'POST' }); } catch (_) {}
+  await new Promise((r) => setTimeout(r, 700));
+  document.body.innerHTML =
+    '<div class="bye"><div><strong>Restarting…</strong>' +
+    'Relief Studio will reopen with the new version.</div></div>';
+  controls.dispose();
+}
+
+$('updateDismiss').addEventListener('click', () => { $('updateBar').hidden = true; });
+setTimeout(checkForUpdates, 1500);
+setInterval(checkForUpdates, 6 * 60 * 60 * 1000);
+
 // ---------------------------------------------------------------- demo map
 function demoDepth() {
   const N = 768, c = document.createElement('canvas');

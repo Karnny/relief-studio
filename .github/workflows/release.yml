@@ -52,6 +52,15 @@ jobs:
         working-directory: ${{ env.DIR }}
         run: python -m PyInstaller ReliefStudio.spec --noconfirm --clean
 
+      - name: Checksum the executable
+        working-directory: ${{ env.DIR }}
+        shell: pwsh
+        run: |
+          $exe = "dist\ReliefStudio.exe"
+          $hash = (Get-FileHash $exe -Algorithm SHA256).Hash.ToLower()
+          "$hash  ReliefStudio.exe" | Set-Content -Encoding ascii "$exe.sha256"
+          Write-Host "$hash  ReliefStudio.exe"
+
       - name: Smoke test the executable
         working-directory: ${{ env.DIR }}
         shell: pwsh
@@ -80,7 +89,9 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: ReliefStudio-windows-x64
-          path: ${{ env.DIR }}/dist/ReliefStudio.exe
+          path: |
+            ${{ env.DIR }}/dist/ReliefStudio.exe
+            ${{ env.DIR }}/dist/ReliefStudio.exe.sha256
           if-no-files-found: error
 
       - name: Publish the GitHub Release
@@ -89,7 +100,9 @@ jobs:
         with:
           tag_name: ${{ inputs.tag || github.ref_name }}
           name: Relief Studio ${{ inputs.tag || github.ref_name }}
-          files: ${{ env.DIR }}/dist/ReliefStudio.exe
+          files: |
+            ${{ env.DIR }}/dist/ReliefStudio.exe
+            ${{ env.DIR }}/dist/ReliefStudio.exe.sha256
           generate_release_notes: true
           fail_on_unmatched_files: true
           body: |
@@ -97,5 +110,6 @@ jobs:
 
             - Unsigned: SmartScreen shows "Windows protected your PC" -> *More info* -> *Run anyway*.
             - One file, no installer. Double-click: the browser opens at <http://127.0.0.1:8765/>.
+            - **Auto-update**: v1.5.0+ checks this release feed on launch. When a newer version exists the header shows *Download*; the app verifies the attached `.sha256` and installs it on restart. Older copies can be updated by downloading this exe once.
             - Stop it with the **Quit** button in the page header, or close the console window.
             - ARM64 users: build with an ARM64 Python on an ARM64 Windows machine (same `ReliefStudio.spec`).

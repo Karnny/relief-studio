@@ -185,12 +185,14 @@ Neither affects the geometry of a rectangular plate produced from a depth map.
 python -m unittest discover -s tests -v
 ```
 
-Forty-five stdlib tests (~3.6 s; only numpy and pillow are needed): the 512-grid
+Fifty-four stdlib tests (~3.8 s; only numpy and pillow are needed): the 512-grid
 `demo-depth.png` STL hash canary (byte-identical across platforms), 16-bit depth decode
 precision, the plate W × H transform (auto and explicit), the face tilt/turn/roll warps, the
-local sculpt brush (locality, per-stroke strength cap, accumulation across strokes, raise
-past the depth ceiling, sanitising), the GUI server's `/api/hello` / single-instance probing,
-and aborted-client handling. CI runs them before every build.
+local sculpt brush (locality, per-stroke cap, accumulation, raise past the ceiling,
+sanitising), the auto-updater (version compare, release/checksum parsing, staged download
+verification, exe swap, PyInstaller-safe relaunch environment), the GUI server's
+`/api/hello` / `/api/update` / single-instance probing, and aborted-client handling. CI
+runs them before every build.
 
 
 ## macOS app
@@ -265,6 +267,28 @@ when a `v*` tag is pushed — so users can just download a build. Both are trigg
 the Actions tab (*Run workflow*). Keep the workflow at the repository root — the first
 step detects whether the project is in the root or a `relief/` subfolder.
 
+**Updates (v1.5.0+)**
+
+The Windows build updates itself from GitHub Releases:
+
+1. On launch (and every 6 h) it asks the release feed for the latest tag. When a newer
+   version exists the header shows *"v1.6.0 available — you have 1.5.0"*; source runs on
+   other platforms only get a **Release page** link.
+2. **Download** fetches `ReliefStudio.exe` for the new tag, verifies it against the
+   `ReliefStudio.exe.sha256` asset published in the same release and stages it under
+   `%LOCALAPPDATA%\ReliefStudio\updates\<version>\`.
+3. **Restart to update** closes the app, the staged exe is swapped in (the old one is
+   renamed to `ReliefStudio.exe.old` and cleaned up on the following start) and the new
+   build reopens. If anything fails, the old exe is restored and the app keeps running.
+4. Other PCs only need this once: every installed copy checks the same feed, so no
+   shared drive, installer or IT step is involved. Offline machines can keep using a
+   manually downloaded exe — the checker just reports nothing.
+
+`--check-updates` prints the feed result as JSON and exits; `--update-api URL` (with
+`--update-insecure` for plain HTTP) points the checker at a mirror or a local test feed.
+GitHub's unauthenticated API is rate-limited, hence the 6 h cache. Release assets and the
+update path stay unsigned (SmartScreen), so signing the exe is the next trust step.
+
 **Windows notes**
 
 - The shipped Windows build keeps a console window: it prints the URL and takes
@@ -296,6 +320,7 @@ step detects whether the project is in the root or a `relief/` subfolder.
 relief/
 ├── relief.py              # geometry kernel (depth map -> mesh)
 ├── relief_gui.py          # local HTTP server + JSON/binary API
+├── updater.py             # GitHub-Release update check / download / staged exe swap
 ├── static/                # UI (app.js, style.css, vendor/three)
 ├── tests/                 # unittest regression tests (STL hash canary, decode, API)
 ├── ReliefStudio.spec      # PyInstaller recipe (Windows + macOS/Linux)
