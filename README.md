@@ -290,12 +290,11 @@ GitHub's unauthenticated API is rate-limited, hence the 6 h cache. Release asset
 update path stay unsigned (SmartScreen), so signing the exe is the next trust step.
 
 **Feed visibility:** the release feed must be readable without credentials. This repository
-is currently **private**, so the default `api.github.com/.../releases/latest` check returns
-404 for the app; the banner simply stays hidden. For other PCs to self-update you either make
-the repo public, or publish the release `ReliefStudio.exe` + `.sha256` on a public mirror and
-point the build/app at it (`RELIEF_UPDATE_API` env var, or a future `update.json` next to the
-exe). The release workflow already publishes both assets, so a mirror only needs to copy
-them.
+is public, so the default `api.github.com/.../releases/latest` check works for every copy
+(verified: `/api/hello` 1.5.0, `/api/update` latest 1.5.0, no error). If the repo is ever
+made private again, publish the release `ReliefStudio.exe` + `.sha256` on a public mirror and
+point the app at it (`RELIEF_UPDATE_API` env var, or an `update.json` next to the exe). The
+release workflow publishes both assets, so a mirror only needs to copy them.
 
 **Windows notes**
 
