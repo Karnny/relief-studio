@@ -38,6 +38,14 @@ returns `{depth, source}` — the depth map you can download.
 | — | `closedBack` | `true` | — | Adds side walls + back so the plate is watertight. |
 | — | `removeThreshold` | 0.01 | 0.01–1 | Silhouette threshold when the base is removed. |
 | Color Mapping | (texture only) | — | — | Bakes the photo into UVs; no effect on geometry. |
+| Face tilt (this tool) | `tilt_deg` | 0° | −30…30, step 1 | Perspective pitch on the depth rows: positive reads as chin up, negative as chin down. |
+
+**Face tilt (this tool's extension).** A relief is a shallow height field, so rotating it in 3D
+barely moves the features — the depth axis is squashed. Instead the *Face tilt* slider applies a
+1-D projective (perspective) warp to the depth-map rows: the lower face expands, the upper face
+compresses, and the top/bottom edges stay put. That is the classic photo-retouching pitch
+correction, so a face that looks a little down can be chinned up without cropping. It is an
+image-space approximation, not a real head re-pose; signs are `+` = chin up, `−` = chin down.
 
 **Plate size (this tool's extension).** the source tool only offers the single *Size* slider. The GUI
 exposes **W and H in millimetres** with a Photoshop-style aspect-ratio chain: lock it to scale
@@ -72,9 +80,10 @@ a binary mask.
 A local dark-themed studio, modelled on the source tool's panel:
 
 - **Left panel** — drop a depth map (PNG/JPG), then adjust *Plate size* (W × H in mm with
-  aspect lock and *Fit depth map*), *Carving mode* (Emboss/Engrave), *Carving depth*, and
-  under *Advanced*: *Remove base*, *Base thickness*, *Depth curve*, *Bend mode/axis/angle*,
-  *Export resolution*. A demo map loads on start so the viewport is never empty.
+  aspect lock and *Fit depth map*), *Face tilt* (chin up/down), *Carving mode*
+  (Emboss/Engrave), *Carving depth*, and under *Advanced*: *Remove base*, *Base thickness*,
+  *Depth curve*, *Bend mode/axis/angle*, *Export resolution*. A demo map loads on start so
+  the viewport is never empty.
 - **Viewport** — orbit / zoom / pan, wireframe, auto-rotate, and a *Texture*
   toggle that maps the source image back onto the surface UVs.
 - **Preview resolution** — 128–2048 grid nodes on the long edge (default 256),
@@ -102,12 +111,15 @@ python3 relief.py depth.png -o plate.stl \
 
 # stretch the plate to an exact 80 x 40 mm (Photoshop-style W x H)
 python3 relief.py depth.png -o plate.stl --width-mm 80 --height-mm 40
+
+# chin the face up by 8 degrees (perspective pitch correction)
+python3 relief.py depth.png -o plate.stl --tilt 8
 ```
 
-`--height-mm` (explicit plate height; omit to follow the depth-map aspect), `--engrave`,
-`--curve gamma|s-curve`, `--bend convex|concave`, `--bend-axis yz`, `--bend-angle 60`,
-`--remove-base`, `--stats` are supported. Output is binary STL or OBJ, in millimetres,
-watertight.
+`--height-mm` (explicit plate height; omit to follow the depth-map aspect), `--tilt`
+(face pitch in degrees, + = chin up), `--engrave`, `--curve gamma|s-curve`,
+`--bend convex|concave`, `--bend-axis yz`, `--bend-angle 60`, `--remove-base`,
+`--stats` are supported. Output is binary STL or OBJ, in millimetres, watertight.
 
 Compare a the source tool download against a rebuild:
 
@@ -140,10 +152,11 @@ Neither affects the geometry of a rectangular plate produced from a depth map.
 python -m unittest discover -s tests -v
 ```
 
-Twenty stdlib tests (~3.5 s; only numpy and pillow are needed): the 512-grid
+Twenty-six stdlib tests (~3.6 s; only numpy and pillow are needed): the 512-grid
 `demo-depth.png` STL hash canary (byte-identical across platforms), 16-bit depth decode
-precision, the plate W × H transform (auto and explicit), the GUI server's `/api/hello` /
-single-instance probing, and aborted-client handling. CI runs them before every build.
+precision, the plate W × H transform (auto and explicit), face-tilt warping, the GUI server's
+`/api/hello` / single-instance probing, and aborted-client handling. CI runs them before
+every build.
 
 
 ## macOS app

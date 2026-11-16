@@ -41,6 +41,36 @@ class ReliefParams:
     bend_mode: str = "off"          # off | convex | concave
     bend_axis: str = "xz"           # xz | yz
     bend_angle: float = 60.0        # degrees (0..360)
+    tilt_deg: float = 0.0           # apparent head pitch; + = chin up, - = chin down
+
+
+def tilt_depth(depth: np.ndarray, degrees: float) -> np.ndarray:
+    """Pitch the head in the depth map (+ = chin up, - = chin down).
+
+    The relief is a shallow height field, so rotating it in 3D barely moves the
+    features (the depth axis is squashed). Instead this applies a 1-D projective
+    warp to the rows - the classic "perspective / pitch" correction: the lower
+    face expands, the upper face compresses, and the top/bottom edges stay put,
+    so the face reads as looking further up (or down) without cropping.
+    """
+    if abs(degrees) < 0.05:
+        return depth
+    # positive = chin up: sample lower source rows into the centre, so the lower
+    # face expands and the upper face compresses (photo perspective correction)
+    k = -math.tan(math.radians(max(-45.0, min(45.0, degrees))))
+    if abs(k) > 0.8:
+        k = math.copysign(0.8, k)
+    rows = depth.shape[0]
+    v_out = np.linspace(0.0, 1.0, rows, dtype=np.float32)   # row 0 = top
+    u_out = 1.0 - 2.0 * v_out                                # +1 top, -1 bottom
+    u_src = (u_out + k) / (1.0 + k * u_out)                  # endpoints stay fixed
+    src = (1.0 - u_src) * 0.5 * (rows - 1)
+    src = np.clip(src, 0.0, rows - 1.0)
+    i0 = np.floor(src).astype(np.int64)
+    i1 = np.minimum(i0 + 1, rows - 1)
+    frac = (src - i0).astype(np.float32)[:, None]
+    warped = depth[i0] * (1.0 - frac) + depth[i1] * frac
+    return warped.astype(np.float32)
 
 
 def depth_from_image(img: "Image.Image") -> np.ndarray:
@@ -147,6 +177,8 @@ def bend(positions: np.ndarray, mode: str, axis: str, angle_deg: float, extent: 
 
 def build_relief(depth: np.ndarray, p: ReliefParams) -> dict:
     """Return {positions, uvs, index, groups, extents, floor_z, counts}."""
+    if p.tilt_deg:
+        depth = tilt_depth(depth, p.tilt_deg)
     if p.smooth > 0:
         depth = gaussian_blur(depth, p.smooth)
     depth = apply_depth_curve(depth, p.invert_depth, p.curve, p.black_point)
@@ -413,6 +445,8 @@ def main() -> None:
     ap.add_argument("--bend", choices=["off", "convex", "concave"], default="off")
     ap.add_argument("--bend-axis", choices=["xz", "yz"], default="xz")
     ap.add_argument("--bend-angle", type=float, default=60.0)
+    ap.add_argument("--tilt", type=float, default=0.0,
+                    help="apparent head pitch in degrees (+ = chin up, - = chin down)")
     ap.add_argument("--stats", action="store_true", help="print mesh statistics as JSON")
     args = ap.parse_args()
 
@@ -423,6 +457,7 @@ def main() -> None:
         black_point=args.black_point, smooth=args.smooth,
         remove_base=args.remove_base, remove_threshold=args.remove_threshold,
         bend_mode=args.bend, bend_axis=args.bend_axis, bend_angle=args.bend_angle,
+        tilt_deg=args.tilt,
     )
     mesh = build_relief(load_depth(args.depth), params)
 

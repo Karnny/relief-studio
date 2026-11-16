@@ -122,6 +122,53 @@ class PlateSizeTest(unittest.TestCase):
         self.assertEqual(p2.height_mm, 0.0)          # negative -> auto
 
 
+class TiltTest(unittest.TestCase):
+    """Face tilt: + degrees = chin up, - = chin down (1-D projective row warp)."""
+
+    def _ramp(self, rows=101, cols=8):
+        return np.repeat((np.arange(rows, dtype=np.float32) / (rows - 1))[:, None], cols, axis=1)
+
+    def test_zero_tilt_is_identity(self):
+        depth = self._ramp()
+        np.testing.assert_array_equal(relief.tilt_depth(depth, 0.0), depth)
+
+    def test_top_and_bottom_edges_do_not_move(self):
+        depth = self._ramp()
+        for deg in (-30, -20, 20, 30):
+            out = relief.tilt_depth(depth, deg)
+            np.testing.assert_array_equal(out[0], depth[0])
+            np.testing.assert_array_equal(out[-1], depth[-1])
+
+    def test_positive_tilt_samples_lower_rows_at_the_centre(self):
+        depth = self._ramp()
+        mid = depth.shape[0] // 2
+        up = relief.tilt_depth(depth, 20)
+        down = relief.tilt_depth(depth, -20)
+        # + = chin up: centre output samples a source row below centre (lower face
+        # moved up), - = chin down: samples above centre.
+        self.assertGreater(float(up[mid, 0]), float(depth[mid, 0]))
+        self.assertLess(float(down[mid, 0]), float(depth[mid, 0]))
+
+    def test_tilt_changes_geometry_but_not_the_grid(self):
+        y, x = np.mgrid[0:80, 0:60].astype(np.float32)
+        depth = (0.5 + 0.5 * np.sin(x / 7.0) * np.cos(y / 9.0)).astype(np.float32)
+        base = relief.ReliefParams(width_mm=60, relief_height=6, subdivisions=64)
+        tilted = relief.ReliefParams(width_mm=60, relief_height=6, subdivisions=64,
+                                     tilt_deg=25)
+        m0 = relief.build_relief(depth, base)
+        m1 = relief.build_relief(depth, tilted)
+        self.assertEqual((m1["cols"], m1["rows"]), (m0["cols"], m0["rows"]))
+        self.assertEqual(len(m1["positions"]), len(m0["positions"]))
+        self.assertEqual(m1["extents"], m0["extents"])
+        self.assertFalse(np.allclose(m1["positions"], m0["positions"]))
+        self.assertFalse(np.isnan(m1["positions"]).any())
+
+    def test_params_from_json_parses_tilt(self):
+        p = relief_gui.params_from_json({"tilt_deg": -12})
+        self.assertEqual(p.tilt_deg, -12.0)
+        self.assertEqual(relief_gui.DEFAULTS["tilt_deg"], 0.0)
+
+
 class DepthDecodeTest(unittest.TestCase):
     def test_16bit_png_keeps_full_precision(self):
         """The old .convert('RGB') bug clipped everything above 255 to white."""
@@ -250,6 +297,13 @@ class ServerTest(unittest.TestCase):
         head = self._preview_head(width_mm=80, height_mm=40)
         self.assertAlmostEqual(head["extents"][0], 80.0, places=3)
         self.assertAlmostEqual(head["extents"][1], 40.0, places=3)
+
+    def test_preview_accepts_face_tilt(self):
+        upright = self._preview_head(width_mm=60)
+        tilted = self._preview_head(width_mm=60, tilt_deg=25)
+        self.assertAlmostEqual(tilted["extents"][0], upright["extents"][0], places=3)
+        self.assertAlmostEqual(tilted["extents"][1], upright["extents"][1], places=3)
+        self.assertEqual(tilted["vertices"], upright["vertices"])
 
     def test_find_running_detects_this_server(self):
         # GET /api/hello has to work for this: the probe used to 404 and fall

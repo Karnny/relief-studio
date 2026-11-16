@@ -51,6 +51,12 @@
       </div>
 
       <div class="field">
+        <div class="label"><span>Face tilt</span><input class="num" id="tilt_deg" type="number" min="-30" max="30" step="1" value="0" /><i>°</i></div>
+        <input class="range" id="tilt_deg_r" type="range" min="-30" max="30" step="1" value="0" />
+        <div class="row tiny">Pitch the head up/down — positive = chin up, negative = chin down.</div>
+      </div>
+
+      <div class="field">
         <div class="label"><span>Carving mode</span></div>
         <div class="segmented" id="mode">
           <button data-mode="emboss" class="on">Emboss</button>

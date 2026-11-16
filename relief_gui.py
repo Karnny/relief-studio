@@ -32,7 +32,7 @@ TEMP_DIR = tempfile.gettempdir()
 
 # Depth maps uploaded in this session: id -> float32 array (row 0 = top)
 APP_ID = "relief-studio"
-APP_VERSION = "1.1.0"
+APP_VERSION = "1.2.0"
 SERVER: "ThreadingHTTPServer | None" = None   # set in serve(), used by /api/quit
 UPLOADS: dict[str, np.ndarray] = {}
 SOURCES: dict[str, bytes] = {}          # original image bytes, for the preview texture
@@ -47,7 +47,7 @@ DEFAULTS = {
     "subdivisions": 1024, "invert_depth": False, "curve": "linear",
     "remove_base": False, "remove_threshold": 0.01, "closed_back": True,
     "black_point": 0.0, "smooth": 0.0,
-    "bend_mode": "off", "bend_axis": "xz", "bend_angle": 60.0,
+    "bend_mode": "off", "bend_axis": "xz", "bend_angle": 60.0, "tilt_deg": 0.0,
 }
 
 
@@ -65,6 +65,7 @@ def params_from_json(body: dict) -> relief.ReliefParams:
         smooth=float(d["smooth"]),
         closed_back=bool(d["closed_back"]), bend_mode=str(d["bend_mode"]),
         bend_axis=str(d["bend_axis"]), bend_angle=float(d["bend_angle"]),
+        tilt_deg=float(d["tilt_deg"]),
     )
 
 
