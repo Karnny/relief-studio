@@ -169,6 +169,69 @@ class TiltTest(unittest.TestCase):
         self.assertEqual(relief_gui.DEFAULTS["tilt_deg"], 0.0)
 
 
+class YawRollTest(unittest.TestCase):
+    """Head turn (yaw, column warp) and head roll (2-D rotation)."""
+
+    def _columns(self, rows=11, cols=101):
+        return np.repeat(np.linspace(0, 1, cols, dtype=np.float32)[None, :], rows, axis=0)
+
+    def test_zero_is_identity(self):
+        depth = self._columns()
+        np.testing.assert_array_equal(relief.yaw_depth(depth, 0.0), depth)
+        np.testing.assert_array_equal(relief.roll_depth(depth, 0.0), depth)
+
+    def test_yaw_keeps_the_edge_columns(self):
+        depth = self._columns()
+        for deg in (-25, 25):
+            out = relief.yaw_depth(depth, deg)
+            np.testing.assert_array_equal(out[:, 0], depth[:, 0])
+            np.testing.assert_array_equal(out[:, -1], depth[:, -1])
+
+    def test_yaw_direction(self):
+        depth = self._columns()           # dark left -> bright right
+        mid = depth.shape[1] // 2
+        left = relief.yaw_depth(depth, 20)
+        right = relief.yaw_depth(depth, -20)
+        # + = toward the viewer's left: the centre samples source pixels to the right
+        self.assertGreater(float(left[0, mid]), float(depth[0, mid]))
+        self.assertLess(float(right[0, mid]), float(depth[0, mid]))
+
+    def test_roll_is_clockwise_and_keeps_the_centre(self):
+        rows, cols = 101, 101
+        depth = np.zeros((rows, cols), np.float32)
+        depth[50, 80] = 1.0               # a mark right of the centre
+        out = relief.roll_depth(depth, 90)
+        # + = clockwise: the mark swings from the right edge to the bottom
+        self.assertEqual(np.unravel_index(int(np.argmax(out)), out.shape), (80, 50))
+
+    def test_roll_180_maps_right_to_left(self):
+        depth = np.zeros((101, 101), np.float32)
+        depth[50, 80] = 1.0
+        out = relief.roll_depth(depth, 180)
+        self.assertEqual(np.unravel_index(int(np.argmax(out)), out.shape), (50, 20))
+
+    def test_combined_warps_keep_the_grid(self):
+        y, x = np.mgrid[0:80, 0:60].astype(np.float32)
+        depth = (0.5 + 0.5 * np.sin(x / 7.0) * np.cos(y / 9.0)).astype(np.float32)
+        base = relief.ReliefParams(width_mm=60, relief_height=6, subdivisions=64)
+        warped = relief.ReliefParams(width_mm=60, relief_height=6, subdivisions=64,
+                                     tilt_deg=10, yaw_deg=15, roll_deg=-8)
+        m0 = relief.build_relief(depth, base)
+        m1 = relief.build_relief(depth, warped)
+        self.assertEqual((m1["cols"], m1["rows"]), (m0["cols"], m0["rows"]))
+        self.assertEqual(len(m1["positions"]), len(m0["positions"]))
+        self.assertEqual(m1["extents"], m0["extents"])
+        self.assertFalse(np.allclose(m1["positions"], m0["positions"]))
+        self.assertFalse(np.isnan(m1["positions"]).any())
+
+    def test_params_from_json_parses_yaw_and_roll(self):
+        p = relief_gui.params_from_json({"yaw_deg": 12, "roll_deg": -7})
+        self.assertEqual(p.yaw_deg, 12.0)
+        self.assertEqual(p.roll_deg, -7.0)
+        self.assertEqual(relief_gui.DEFAULTS["yaw_deg"], 0.0)
+        self.assertEqual(relief_gui.DEFAULTS["roll_deg"], 0.0)
+
+
 class DepthDecodeTest(unittest.TestCase):
     def test_16bit_png_keeps_full_precision(self):
         """The old .convert('RGB') bug clipped everything above 255 to white."""
@@ -304,6 +367,15 @@ class ServerTest(unittest.TestCase):
         self.assertAlmostEqual(tilted["extents"][0], upright["extents"][0], places=3)
         self.assertAlmostEqual(tilted["extents"][1], upright["extents"][1], places=3)
         self.assertEqual(tilted["vertices"], upright["vertices"])
+
+    def test_preview_accepts_face_turn_and_roll(self):
+        upright = self._preview_head(width_mm=60)
+        turned = self._preview_head(width_mm=60, yaw_deg=18)
+        rolled = self._preview_head(width_mm=60, roll_deg=-12)
+        for head in (turned, rolled):
+            self.assertAlmostEqual(head["extents"][0], upright["extents"][0], places=3)
+            self.assertAlmostEqual(head["extents"][1], upright["extents"][1], places=3)
+            self.assertEqual(head["vertices"], upright["vertices"])
 
     def test_find_running_detects_this_server(self):
         # GET /api/hello has to work for this: the probe used to 404 and fall

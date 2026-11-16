@@ -42,6 +42,8 @@ class ReliefParams:
     bend_axis: str = "xz"           # xz | yz
     bend_angle: float = 60.0        # degrees (0..360)
     tilt_deg: float = 0.0           # apparent head pitch; + = chin up, - = chin down
+    yaw_deg: float = 0.0            # apparent head turn; + = nose turns right in the image
+    roll_deg: float = 0.0           # in-plane head roll; + = clockwise
 
 
 def tilt_depth(depth: np.ndarray, degrees: float) -> np.ndarray:
@@ -71,6 +73,66 @@ def tilt_depth(depth: np.ndarray, degrees: float) -> np.ndarray:
     frac = (src - i0).astype(np.float32)[:, None]
     warped = depth[i0] * (1.0 - frac) + depth[i1] * frac
     return warped.astype(np.float32)
+
+
+def yaw_depth(depth: np.ndarray, degrees: float) -> np.ndarray:
+    """Turn the head in the depth map (+ = nose turns toward the right of the image).
+
+    Same trick as tilt_depth, but on the columns: a 1-D projective warp keeps the
+    left/right edges fixed while expanding one cheek and compressing the other,
+    which reads as the head being turned left/right.
+    """
+    if abs(degrees) < 0.05:
+        return depth
+    k = math.tan(math.radians(max(-45.0, min(45.0, degrees))))
+    if abs(k) > 0.8:
+        k = math.copysign(0.8, k)
+    cols = depth.shape[1]
+    x_out = np.linspace(-1.0, 1.0, cols, dtype=np.float32)   # -1 left, +1 right
+    x_src = (x_out + k) / (1.0 + k * x_out)                  # endpoints stay fixed
+    src = (x_src + 1.0) * 0.5 * (cols - 1)
+    src = np.clip(src, 0.0, cols - 1.0)
+    i0 = np.floor(src).astype(np.int64)
+    i1 = np.minimum(i0 + 1, cols - 1)
+    frac = (src - i0).astype(np.float32)[None, :]
+    warped = depth[:, i0] * (1.0 - frac) + depth[:, i1] * frac
+    return warped.astype(np.float32)
+
+
+def roll_depth(depth: np.ndarray, degrees: float) -> np.ndarray:
+    """Rotate the head in the depth image (+ = clockwise), bilinear sampled.
+
+    Rotating a rectangle exposes empty corners; outside samples are clamped to the
+    nearest edge so a black background stays black. Processed in row chunks so an
+    8192-grid depth map does not allocate full-frame coordinate arrays.
+    """
+    if abs(degrees) < 0.05:
+        return depth
+    theta = math.radians(max(-180.0, min(180.0, degrees)))
+    ca, sa = math.cos(theta), math.sin(theta)
+    rows, cols = depth.shape
+    cx = (cols - 1) * 0.5
+    cy = (rows - 1) * 0.5
+    chunk = max(1, 4_000_000 // max(cols, 1))
+    xs = np.arange(cols, dtype=np.float32) - cx
+    out = np.empty_like(depth)
+    for y0 in range(0, rows, chunk):
+        y1 = min(rows, y0 + chunk)
+        ys = np.arange(y0, y1, dtype=np.float32)[:, None] - cy
+        dx = xs[None, :]
+        # inverse rotation: source = R(-theta) * (dx, dy)
+        sx = np.clip(dx * ca + ys * sa + cx, 0.0, cols - 1.0)
+        sy = np.clip(-dx * sa + ys * ca + cy, 0.0, rows - 1.0)
+        x0 = np.floor(sx).astype(np.int64)
+        x1 = np.minimum(x0 + 1, cols - 1)
+        r0 = np.floor(sy).astype(np.int64)
+        r1 = np.minimum(r0 + 1, rows - 1)
+        fx = (sx - x0).astype(np.float32)
+        fy = (sy - r0).astype(np.float32)
+        top = depth[r0, x0] * (1.0 - fx) + depth[r0, x1] * fx
+        bot = depth[r1, x0] * (1.0 - fx) + depth[r1, x1] * fx
+        out[y0:y1] = top * (1.0 - fy) + bot * fy
+    return out.astype(np.float32)
 
 
 def depth_from_image(img: "Image.Image") -> np.ndarray:
@@ -179,6 +241,10 @@ def build_relief(depth: np.ndarray, p: ReliefParams) -> dict:
     """Return {positions, uvs, index, groups, extents, floor_z, counts}."""
     if p.tilt_deg:
         depth = tilt_depth(depth, p.tilt_deg)
+    if p.yaw_deg:
+        depth = yaw_depth(depth, p.yaw_deg)
+    if p.roll_deg:
+        depth = roll_depth(depth, p.roll_deg)
     if p.smooth > 0:
         depth = gaussian_blur(depth, p.smooth)
     depth = apply_depth_curve(depth, p.invert_depth, p.curve, p.black_point)
@@ -447,6 +513,10 @@ def main() -> None:
     ap.add_argument("--bend-angle", type=float, default=60.0)
     ap.add_argument("--tilt", type=float, default=0.0,
                     help="apparent head pitch in degrees (+ = chin up, - = chin down)")
+    ap.add_argument("--yaw", type=float, default=0.0,
+                    help="apparent head turn in degrees (+ = nose turns right in the image)")
+    ap.add_argument("--roll", type=float, default=0.0,
+                    help="in-plane head roll in degrees (+ = clockwise)")
     ap.add_argument("--stats", action="store_true", help="print mesh statistics as JSON")
     args = ap.parse_args()
 
@@ -457,7 +527,7 @@ def main() -> None:
         black_point=args.black_point, smooth=args.smooth,
         remove_base=args.remove_base, remove_threshold=args.remove_threshold,
         bend_mode=args.bend, bend_axis=args.bend_axis, bend_angle=args.bend_angle,
-        tilt_deg=args.tilt,
+        tilt_deg=args.tilt, yaw_deg=args.yaw, roll_deg=args.roll,
     )
     mesh = build_relief(load_depth(args.depth), params)
 

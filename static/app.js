@@ -106,6 +106,8 @@ function readControls() {
     bend_axis: axis,
     bend_angle: +$('bend_angle').value,
     tilt_deg: +$('tilt_deg').value,
+    yaw_deg: +$('yaw_deg').value,
+    roll_deg: +$('roll_deg').value,
   };
 }
 
@@ -212,10 +214,10 @@ function bindPair(numId, rangeId, onChange) {
   num.addEventListener('change', () => schedule());
 }
 
-['relief_height', 'base_thickness', 'subdivisions', 'bend_angle', 'preview_res', 'black_point', 'smooth', 'tilt_deg'].forEach((id) =>
+['relief_height', 'base_thickness', 'subdivisions', 'bend_angle', 'preview_res', 'black_point', 'smooth', 'tilt_deg', 'yaw_deg', 'roll_deg'].forEach((id) =>
   bindPair(id, id + '_r'));
 
-['relief_height', 'base_thickness', 'subdivisions', 'bend_angle', 'tilt_deg'].forEach((id) =>
+['relief_height', 'base_thickness', 'subdivisions', 'bend_angle', 'tilt_deg', 'yaw_deg', 'roll_deg'].forEach((id) =>
   $(id + '_r').addEventListener('input', () => schedule()));
 
 // ------------------------------------------------- plate W × H (Photoshop-style)
