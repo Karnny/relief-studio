@@ -11,6 +11,7 @@ from __future__ import annotations
 import argparse
 import io
 import json
+import math
 import os
 import struct
 import sys
@@ -32,7 +33,7 @@ TEMP_DIR = tempfile.gettempdir()
 
 # Depth maps uploaded in this session: id -> float32 array (row 0 = top)
 APP_ID = "relief-studio"
-APP_VERSION = "1.3.1"
+APP_VERSION = "1.4.0"
 SERVER: "ThreadingHTTPServer | None" = None   # set in serve(), used by /api/quit
 UPLOADS: dict[str, np.ndarray] = {}
 SOURCES: dict[str, bytes] = {}          # original image bytes, for the preview texture
@@ -48,8 +49,47 @@ DEFAULTS = {
     "remove_base": False, "remove_threshold": 0.01, "closed_back": True,
     "black_point": 0.0, "smooth": 0.0,
     "bend_mode": "off", "bend_axis": "xz", "bend_angle": 60.0,
-    "tilt_deg": 0.0, "yaw_deg": 0.0, "roll_deg": 0.0,
+    "tilt_deg": 0.0, "yaw_deg": 0.0, "roll_deg": 0.0, "sculpt": [],
 }
+
+MAX_SCULPT_STROKES = 600
+MAX_SCULPT_POINTS = 4000
+
+
+def sanitize_sculpt(raw) -> list:
+    """Bound and validate browser-supplied brush strokes before touching numpy."""
+    if not isinstance(raw, list):
+        return []
+    strokes = []
+    for stroke in raw[:MAX_SCULPT_STROKES]:
+        if not isinstance(stroke, dict):
+            continue
+        try:
+            radius = float(stroke.get("radius_mm", 0.0))
+            strength = float(stroke.get("strength_mm", 0.0))
+        except (TypeError, ValueError):
+            continue
+        if not (math.isfinite(radius) and math.isfinite(strength)):
+            continue
+        if radius <= 0.0 or strength == 0.0:
+            continue
+        points = stroke.get("points")
+        if not isinstance(points, list):
+            continue
+        clean = []
+        for pt in points[:MAX_SCULPT_POINTS]:
+            if not isinstance(pt, dict):
+                continue
+            try:
+                u = float(pt.get("u"))
+                v = float(pt.get("v"))
+            except (TypeError, ValueError):
+                continue
+            if math.isfinite(u) and math.isfinite(v):
+                clean.append({"u": min(1.0, max(0.0, u)), "v": min(1.0, max(0.0, v))})
+        if clean:
+            strokes.append({"radius_mm": radius, "strength_mm": strength, "points": clean})
+    return strokes
 
 
 def params_from_json(body: dict) -> relief.ReliefParams:
@@ -67,7 +107,7 @@ def params_from_json(body: dict) -> relief.ReliefParams:
         closed_back=bool(d["closed_back"]), bend_mode=str(d["bend_mode"]),
         bend_axis=str(d["bend_axis"]), bend_angle=float(d["bend_angle"]),
         tilt_deg=float(d["tilt_deg"]), yaw_deg=float(d["yaw_deg"]),
-        roll_deg=float(d["roll_deg"]),
+        roll_deg=float(d["roll_deg"]), sculpt=sanitize_sculpt(d.get("sculpt")),
     )
 
 

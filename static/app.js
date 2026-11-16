@@ -22,6 +22,8 @@ const state = {
   aspectLock: true,      // link W and H like Photoshop's transform chain
   imageAspect: 1,        // depth map width / height
   ratio: 1,              // locked W / H ratio
+  sculptMode: false,
+  sculptStrokes: [],     // [{radius_mm, strength_mm, points:[{u,v}]}] applied to the depth map
 };
 
 // ---------------------------------------------------------------- three.js
@@ -65,6 +67,7 @@ let texture = null;
 
 // Debug handle (handy in DevTools and for automated checks).
 window.__relief = { scene, camera, controls, mesh, material, state };
+window.__relief.three = THREE;
 window.__relief.refresh = (...a) => refresh(...a);
 
 function resize() {
@@ -108,6 +111,7 @@ function readControls() {
     tilt_deg: +$('tilt_deg').value,
     yaw_deg: +$('yaw_deg').value,
     roll_deg: +$('roll_deg').value,
+    sculpt: sculptStrokesPayload(),
   };
 }
 
@@ -372,6 +376,156 @@ $('tex').addEventListener('click', (e) => {
   e.currentTarget.classList.toggle('on', state.textured);
 });
 
+// ---------------------------------------------------------------- sculpt brush
+// Local raise/lower brush on the depth map: raycast the preview, collect UV
+// points along the drag, and let the server apply Gaussian falloff patches.
+const raycaster = new THREE.Raycaster();
+const pointerNdc = new THREE.Vector2();
+let brush = 'raise';
+let activeStroke = null;
+let lastStrokePoint = null;
+let sculptTimer = null;
+let lastSculptPaint = 0;
+
+function sculptStrokesPayload() {
+  return activeStroke ? state.sculptStrokes.concat([activeStroke]) : state.sculptStrokes;
+}
+
+function updateSculptInfo() {
+  const n = state.sculptStrokes.length;
+  const pts = state.sculptStrokes.reduce((sum, s) => sum + s.points.length, 0);
+  const editing = $('sculpt').classList.contains('on');
+  if (n) {
+    $('sculptInfo').textContent =
+      `${n} stroke${n === 1 ? '' : 's'} · ${pts} points — ` +
+      (editing ? 'drag on the model to keep sculpting.' : 'press Sculpt to edit again.');
+  } else {
+    const hint = '0 strokes — press Sculpt (top right of the viewport), then drag on the model.';
+    $('sculptInfo').textContent = hint;
+  }
+}
+
+function hitUV(ev) {
+  const rect = canvas.getBoundingClientRect();
+  pointerNdc.set(((ev.clientX - rect.left) / rect.width) * 2 - 1,
+                 -((ev.clientY - rect.top) / rect.height) * 2 + 1);
+  raycaster.setFromCamera(pointerNdc, camera);
+  const hits = raycaster.intersectObject(mesh);
+  if (!hits.length || !hits[0].uv) return null;
+  // the packed UV has v = 1 at the top row; the server wants v = 0 at the top
+  return { u: hits[0].uv.x, v: 1 - hits[0].uv.y };
+}
+
+function sculptRefreshSoon() {
+  const now = performance.now();
+  const wait = Math.max(0, 90 - (now - lastSculptPaint));
+  if (wait === 0) {
+    lastSculptPaint = now;
+    refresh();
+    return;
+  }
+  if (!sculptTimer) {
+    sculptTimer = setTimeout(() => {
+      sculptTimer = null;
+      lastSculptPaint = performance.now();
+      refresh();
+    }, wait);
+  }
+}
+
+function endStroke() {
+  if (!activeStroke) return;
+  if (activeStroke.points.length) state.sculptStrokes.push(activeStroke);
+  activeStroke = null;
+  lastStrokePoint = null;
+  updateSculptInfo();
+  sculptRefreshSoon();
+}
+
+$('sculpt').addEventListener('click', (e) => {
+  state.sculptMode = !state.sculptMode;
+  e.currentTarget.classList.toggle('on', state.sculptMode);
+  controls.enabled = !state.sculptMode;   // left-drag paints instead of orbiting
+  canvas.style.cursor = state.sculptMode ? 'crosshair' : '';
+  if (!state.sculptMode) endStroke();
+  updateSculptInfo();
+});
+
+canvas.addEventListener('pointerdown', (ev) => {
+  if (!state.sculptMode || ev.button !== 0 || !mesh.visible) return;
+  const hit = hitUV(ev);
+  if (!hit) return;
+  ev.preventDefault();
+  try { canvas.setPointerCapture(ev.pointerId); } catch (_) {}
+  activeStroke = {
+    radius_mm: +$('brush_radius').value || 6,
+    strength_mm: (brush === 'lower' ? -1 : 1) * (+$('brush_strength').value || 1),
+    points: [hit],
+  };
+  lastStrokePoint = hit;
+  updateSculptInfo();
+  sculptRefreshSoon();
+});
+
+canvas.addEventListener('pointermove', (ev) => {
+  if (!activeStroke) return;
+  const hit = hitUV(ev);
+  if (!hit) return;
+  const moved = lastStrokePoint
+    ? Math.hypot(hit.u - lastStrokePoint.u, hit.v - lastStrokePoint.v) : Infinity;
+  if (moved >= 0.006 && activeStroke.points.length < 600) {
+    activeStroke.points.push(hit);
+    lastStrokePoint = hit;
+    updateSculptInfo();
+    sculptRefreshSoon();
+  }
+});
+
+['pointerup', 'pointercancel'].forEach((name) =>
+  canvas.addEventListener(name, () => endStroke()));
+
+function bindBrushPair(id) {
+  const num = $(id), range = $(id + '_r');
+  const sync = (v) => {
+    const val = Math.min(+num.max, Math.max(+num.min, +v || +num.min));
+    num.value = val; range.value = val;
+  };
+  num.addEventListener('input', () => sync(num.value));
+  range.addEventListener('input', () => sync(range.value));
+}
+bindBrushPair('brush_radius');
+bindBrushPair('brush_strength');
+segment($('brush_mode'), 'brush', (v) => { brush = v; });
+
+$('sculpt_undo').addEventListener('click', () => {
+  if (!state.sculptStrokes.length) return;
+  state.sculptStrokes.pop();
+  activeStroke = null;
+  updateSculptInfo();
+  schedule();
+});
+
+$('sculpt_clear').addEventListener('click', () => {
+  if (!state.sculptStrokes.length && !activeStroke) return;
+  state.sculptStrokes = [];
+  activeStroke = null;
+  updateSculptInfo();
+  schedule();
+});
+
+function resetSculpt() {
+  state.sculptStrokes = [];
+  activeStroke = null;
+  updateSculptInfo();
+}
+
+window.__relief.sculpt = {
+  strokes: () => state.sculptStrokes.map((s) => ({ ...s, points: s.points.length })),
+  mode: () => state.sculptMode,
+  brush: () => brush,
+  reset: resetSculpt,
+};
+
 $('reset').addEventListener('click', () => {
   const d = { relief_height: 6, base_thickness: 1, subdivisions: 1024, bend_angle: 60, black_point: 0, smooth: 0 };
   for (const [k, v] of Object.entries(d)) { $(k).value = v; $(k + '_r').value = v; }
@@ -380,6 +534,7 @@ $('reset').addEventListener('click', () => {
   state.ratio = state.imageAspect || 1;
   const [nw, nh] = naturalSize(60);
   applySize(nw, nh, 'fit');
+  resetSculpt();
   $('ratio_lock').classList.add('on');
   $('ratio_lock').textContent = '\u{1F517}';
   mode = 'emboss'; curve = 'linear'; bend = 'off'; axis = 'xz';
@@ -401,6 +556,7 @@ async function useFile(file) {
   if (info.error) { alert(info.error); return; }
   state.imageId = info.id;
   state.imageAspect = info.width / info.height;
+  resetSculpt();                     // brush strokes belong to the previous depth map
   const longEdge = Math.max(+$('width_mm').value || 60, +$('height_mm').value || 60);
   const [nw, nh] = naturalSize(longEdge);
   applySize(nw, nh, 'fit');

@@ -41,6 +41,7 @@ returns `{depth, source}` — the depth map you can download.
 | Face tilt (this tool) | `tilt_deg` | 0° | −30…30, step 1 | Perspective pitch on the depth rows: positive reads as chin up, negative as chin down. |
 | Face turn (this tool) | `yaw_deg` | 0° | −30…30, step 1 | Perspective yaw on the columns: positive turns the nose right in the image. |
 | Head roll (this tool) | `roll_deg` | 0° | −30…30, step 1 | In-plane rotation of the depth map: positive = clockwise. |
+| Sculpt brush (this tool) | `sculpt` | — | radius 1–25 mm, strength 0.1–5 mm | Local Gaussian raise/lower strokes painted on the model; stored as UV points and applied to the depth map before meshing. |
 
 **Face correction (this tool's extension).** A relief is a shallow height field, so rotating it
 in 3D barely moves the features — the depth axis is squashed. Instead three sliders warp the
@@ -57,6 +58,15 @@ depth map directly, the way photo retouchers use perspective/rotate:
 All three keep the plate extents and mesh grid untouched, run before smoothing/curves, and are
 image-space approximations, not a real head re-pose: keep angles modest (±5–15° typical) and
 check the preview. Signs are listed above; 0° is byte-identical to the old output.
+
+**Local sculpt (this tool's extension).** Press **Sculpt** in the viewport toolbar and drag on
+the model: the brush raises (**Raise**) or lowers (**Lower**) the depth in a soft Gaussian patch,
+with **Radius** and **Strength** in millimetres. That is the direct way to pull a mouth forward
+("higher") or knead a forehead shallower, and unlike the sliders it edits only the area you paint.
+The browser raycasts the preview mesh to UV points; `relief.apply_sculpt()` applies the patches to
+the depth map on every preview and export, so the exported STL keeps them. **Undo stroke** /
+**Clear** manage the session; strokes reset when you load another depth map. In the CLI the same
+strokes can be replayed with `--sculpt strokes.json`.
 
 **Plate size (this tool's extension).** the source tool only offers the single *Size* slider. The GUI
 exposes **W and H in millimetres** with a Photoshop-style aspect-ratio chain: lock it to scale
@@ -95,8 +105,9 @@ A local dark-themed studio, modelled on the source tool's panel:
   turn*, *Head roll*), *Carving mode* (Emboss/Engrave), *Carving depth*, and under
   *Advanced*: *Remove base*, *Base thickness*, *Depth curve*, *Bend mode/axis/angle*,
   *Export resolution*. A demo map loads on start so the viewport is never empty.
-- **Viewport** — orbit / zoom / pan, wireframe, auto-rotate, and a *Texture*
-  toggle that maps the source image back onto the surface UVs.
+- **Viewport** — orbit / zoom / pan, wireframe, auto-rotate, a *Texture* toggle that maps the
+  source image back onto the surface UVs, and a *Sculpt* tool for local raise/lower brushing
+  (left-drag on the model while it is on; toggle it off to orbit again).
 - **Preview resolution** — 128–2048 grid nodes on the long edge (default 256),
   independent of the export setting. 256 rebuilds in ~10 ms; 1024 in ~80 ms;
   2048 is 3.1 M vertices and feels heavier.
@@ -128,10 +139,14 @@ python3 relief.py depth.png -o plate.stl --tilt 8
 
 # turn it 10 degrees right and roll it 5 degrees clockwise
 python3 relief.py depth.png -o plate.stl --yaw 10 --roll 5
+
+# replay local sculpt strokes (same JSON the GUI sends)
+python3 relief.py depth.png -o plate.stl --sculpt strokes.json
 ```
 
 `--height-mm` (explicit plate height; omit to follow the depth-map aspect), `--tilt`
-(pitch, + = chin up), `--yaw` (+ = nose turns right), `--roll` (+ = clockwise), `--engrave`,
+(pitch, + = chin up), `--yaw` (+ = nose turns right), `--roll` (+ = clockwise), `--sculpt`
+(JSON list of `{radius_mm, strength_mm, points:[{u,v}]}` strokes), `--engrave`,
 `--curve gamma|s-curve`, `--bend convex|concave`, `--bend-axis yz`, `--bend-angle 60`,
 `--remove-base`, `--stats` are supported. Output is binary STL or OBJ, in millimetres,
 watertight.
@@ -167,11 +182,12 @@ Neither affects the geometry of a rectangular plate produced from a depth map.
 python -m unittest discover -s tests -v
 ```
 
-Thirty-four stdlib tests (~3.6 s; only numpy and pillow are needed): the 512-grid
+Forty-two stdlib tests (~3.8 s; only numpy and pillow are needed): the 512-grid
 `demo-depth.png` STL hash canary (byte-identical across platforms), 16-bit depth decode
-precision, the plate W × H transform (auto and explicit), the face tilt/turn/roll warps,
-the GUI server's `/api/hello` / single-instance probing, and aborted-client handling. CI
-runs them before every build.
+precision, the plate W × H transform (auto and explicit), the face tilt/turn/roll warps, the
+local sculpt brush (localisation, accumulation, clamping, sanitising), the GUI server's
+`/api/hello` / single-instance probing, and aborted-client handling. CI runs them before
+every build.
 
 
 ## macOS app

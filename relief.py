@@ -18,7 +18,7 @@ import argparse
 import json
 import math
 import struct
-from dataclasses import dataclass, asdict
+from dataclasses import dataclass, asdict, field
 
 import numpy as np
 from PIL import Image
@@ -44,6 +44,7 @@ class ReliefParams:
     tilt_deg: float = 0.0           # apparent head pitch; + = chin up, - = chin down
     yaw_deg: float = 0.0            # apparent head turn; + = nose turns right in the image
     roll_deg: float = 0.0           # in-plane head roll; + = clockwise
+    sculpt: list = field(default_factory=list)   # local raise/lower brush strokes
 
 
 def tilt_depth(depth: np.ndarray, degrees: float) -> np.ndarray:
@@ -201,6 +202,69 @@ def apply_depth_curve(depth: np.ndarray, invert: bool, curve: str,
     return d.astype(np.float32)
 
 
+def apply_sculpt(depth: np.ndarray, strokes: list, width_mm: float, height_mm: float,
+                 relief_height: float) -> np.ndarray:
+    """Apply local raise/lower brush strokes to the depth map.
+
+    Each stroke is ``{"radius_mm": r, "strength_mm": s, "points": [{"u": .., "v": ..}]}``
+    with u/v in 0..1 (v = 0 at the top of the image). ``strength_mm`` is the depth
+    offset at the brush centre (negative lowers). The Gaussian falloff is sized in
+    millimetres on the plate, so the brush feels the same at any plate size.
+    Strokes accumulate; the result is clamped to the valid depth range.
+    """
+    if not strokes or not (width_mm > 0) or not (height_mm > 0) or not (relief_height > 0):
+        return depth
+    rows, cols = depth.shape
+    if rows < 2 or cols < 2:
+        return depth
+    delta = np.zeros((rows, cols), dtype=np.float32)
+    for stroke in strokes:
+        if not isinstance(stroke, dict):
+            continue
+        try:
+            radius_mm = float(stroke.get("radius_mm", 0.0))
+            strength_mm = float(stroke.get("strength_mm", 0.0))
+        except (TypeError, ValueError):
+            continue
+        if radius_mm <= 0.0 or strength_mm == 0.0 or not math.isfinite(strength_mm):
+            continue
+        points = stroke.get("points") or []
+        if not isinstance(points, list):
+            continue
+        su = radius_mm / width_mm * (cols - 1)      # sigma in x pixels
+        sv = radius_mm / height_mm * (rows - 1)     # sigma in y pixels
+        if su <= 0.0 or sv <= 0.0:
+            continue
+        amp = strength_mm / relief_height
+        rx = max(1, int(math.ceil(3.2 * su)))
+        ry = max(1, int(math.ceil(3.2 * sv)))
+        for pt in points[:20000]:
+            if not isinstance(pt, dict):
+                continue
+            try:
+                u = float(pt.get("u"))
+                v = float(pt.get("v"))
+            except (TypeError, ValueError):
+                continue
+            if not (math.isfinite(u) and math.isfinite(v)):
+                continue
+            cx = u * (cols - 1)
+            cy = v * (rows - 1)
+            x0 = max(0, int(math.floor(cx)) - rx)
+            x1 = min(cols, int(math.ceil(cx)) + rx + 1)
+            y0 = max(0, int(math.floor(cy)) - ry)
+            y1 = min(rows, int(math.ceil(cy)) + ry + 1)
+            if x0 >= x1 or y0 >= y1:
+                continue
+            dx = (np.arange(x0, x1, dtype=np.float32) - cx) / su
+            dy = (np.arange(y0, y1, dtype=np.float32) - cy) / sv
+            falloff = np.exp(-0.5 * (dx[None, :] ** 2 + dy[:, None] ** 2))
+            delta[y0:y1, x0:x1] += amp * falloff.astype(np.float32)
+    if not delta.any():
+        return depth
+    return np.clip(depth + delta, 0.0, 1.0).astype(np.float32)
+
+
 def bilinear_grid(depth: np.ndarray, cols: int, rows: int) -> np.ndarray:
     """Sample the depth map at the grid nodes, exactly as the mesh builder does."""
     h, w = depth.shape
@@ -245,15 +309,8 @@ def build_relief(depth: np.ndarray, p: ReliefParams) -> dict:
         depth = yaw_depth(depth, p.yaw_deg)
     if p.roll_deg:
         depth = roll_depth(depth, p.roll_deg)
-    if p.smooth > 0:
-        depth = gaussian_blur(depth, p.smooth)
-    depth = apply_depth_curve(depth, p.invert_depth, p.curve, p.black_point)
     h, w = depth.shape
     aspect = w / h
-
-    subdiv = max(2, int(round(p.subdivisions)))
-    cols = subdiv if aspect >= 1 else max(2, int(round(subdiv * aspect)))
-    rows = subdiv if aspect < 1 else max(2, int(round(subdiv / aspect)))
 
     if p.height_mm and p.height_mm > 0.0:
         # Photoshop-style transform: W and H are the actual plate dimensions, so
@@ -265,6 +322,16 @@ def build_relief(depth: np.ndarray, p: ReliefParams) -> dict:
         # depth-map aspect (the original behaviour, still the default).
         width_mm = p.width_mm if aspect >= 1 else p.width_mm * aspect
         height_mm = p.width_mm / aspect if aspect >= 1 else p.width_mm
+
+    if p.smooth > 0:
+        depth = gaussian_blur(depth, p.smooth)
+    depth = apply_depth_curve(depth, p.invert_depth, p.curve, p.black_point)
+    if p.sculpt:
+        depth = apply_sculpt(depth, p.sculpt, width_mm, height_mm, p.relief_height)
+
+    subdiv = max(2, int(round(p.subdivisions)))
+    cols = subdiv if aspect >= 1 else max(2, int(round(subdiv * aspect)))
+    rows = subdiv if aspect < 1 else max(2, int(round(subdiv / aspect)))
     dx = width_mm / (cols - 1)
     dy = height_mm / (rows - 1)
 
@@ -517,8 +584,20 @@ def main() -> None:
                     help="apparent head turn in degrees (+ = nose turns right in the image)")
     ap.add_argument("--roll", type=float, default=0.0,
                     help="in-plane head roll in degrees (+ = clockwise)")
+    ap.add_argument("--sculpt", metavar="FILE",
+                    help="JSON list of local sculpt strokes (radius_mm, strength_mm, points)")
     ap.add_argument("--stats", action="store_true", help="print mesh statistics as JSON")
     args = ap.parse_args()
+
+    sculpt_strokes = []
+    if args.sculpt:
+        try:
+            with open(args.sculpt, encoding="utf-8") as f:
+                sculpt_strokes = json.load(f)
+        except OSError as exc:
+            raise SystemExit(f"cannot read --sculpt file: {exc}")
+        if not isinstance(sculpt_strokes, list):
+            raise SystemExit("--sculpt JSON must be a list of stroke objects")
 
     params = ReliefParams(
         width_mm=args.width_mm, height_mm=args.height_mm,
@@ -528,6 +607,7 @@ def main() -> None:
         remove_base=args.remove_base, remove_threshold=args.remove_threshold,
         bend_mode=args.bend, bend_axis=args.bend_axis, bend_angle=args.bend_angle,
         tilt_deg=args.tilt, yaw_deg=args.yaw, roll_deg=args.roll,
+        sculpt=sculpt_strokes,
     )
     mesh = build_relief(load_depth(args.depth), params)
 

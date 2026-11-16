@@ -232,6 +232,82 @@ class YawRollTest(unittest.TestCase):
         self.assertEqual(relief_gui.DEFAULTS["roll_deg"], 0.0)
 
 
+class SculptTest(unittest.TestCase):
+    """Local raise/lower brush strokes applied to the depth map."""
+
+    def _depth(self, rows=61, cols=81):
+        return np.full((rows, cols), 0.5, np.float32)
+
+    def _stroke(self, u=0.5, v=0.5, radius=8, strength=1.2, n=1):
+        return {"radius_mm": radius, "strength_mm": strength,
+                "points": [{"u": u, "v": v}] * n}
+
+    def test_empty_strokes_are_a_no_op(self):
+        depth = self._depth()
+        np.testing.assert_array_equal(
+            relief.apply_sculpt(depth, [], 60.0, 60.0, 6.0), depth)
+
+    def test_raise_and_lower_at_the_centre(self):
+        depth = self._depth()
+        up = relief.apply_sculpt(depth, [self._stroke(strength=1.2)], 60, 60, 6)
+        down = relief.apply_sculpt(depth, [self._stroke(strength=-1.2)], 60, 60, 6)
+        mid = (depth.shape[0] // 2, depth.shape[1] // 2)
+        self.assertGreater(float(up[mid]), float(depth[mid]))
+        self.assertLess(float(down[mid]), float(depth[mid]))
+        self.assertAlmostEqual(float(up[mid]), 0.5 + 1.2 / 6.0, places=3)
+
+    def test_brush_is_local(self):
+        depth = self._depth()
+        out = relief.apply_sculpt(depth, [self._stroke(u=0.5, v=0.5)], 60, 60, 6)
+        self.assertAlmostEqual(float(out[2, 2]), 0.5, places=6)
+        self.assertGreater(float(out[depth.shape[0] // 2, depth.shape[1] // 2]), 0.5)
+
+    def test_several_points_and_strokes_accumulate(self):
+        depth = self._depth()
+        one = relief.apply_sculpt(depth, [self._stroke(strength=0.6)], 60, 60, 6)
+        two = relief.apply_sculpt(depth, [self._stroke(strength=0.6),
+                                          self._stroke(strength=0.6)], 60, 60, 6)
+        mid = (depth.shape[0] // 2, depth.shape[1] // 2)
+        self.assertAlmostEqual(float(two[mid] - 0.5), 2 * float(one[mid] - 0.5), places=3)
+
+    def test_result_is_clamped_to_valid_depth(self):
+        depth = np.ones((31, 31), np.float32)
+        out = relief.apply_sculpt(depth, [self._stroke(strength=5.0)], 60, 60, 6)
+        self.assertLessEqual(float(out.max()), 1.0)
+        low = np.zeros((31, 31), np.float32)
+        out2 = relief.apply_sculpt(low, [self._stroke(strength=-5.0)], 60, 60, 6)
+        self.assertGreaterEqual(float(out2.min()), 0.0)
+
+    def test_build_relief_applies_sculpt_but_keeps_the_grid(self):
+        y, x = np.mgrid[0:80, 0:60].astype(np.float32)
+        depth = (0.5 + 0.5 * np.sin(x / 7.0) * np.cos(y / 9.0)).astype(np.float32)
+        base = relief.ReliefParams(width_mm=60, relief_height=6, subdivisions=64)
+        sculpted = relief.ReliefParams(width_mm=60, relief_height=6, subdivisions=64,
+                                       sculpt=[self._stroke(u=0.5, v=0.35, strength=2.0)])
+        m0 = relief.build_relief(depth, base)
+        m1 = relief.build_relief(depth, sculpted)
+        self.assertEqual((m1["cols"], m1["rows"]), (m0["cols"], m0["rows"]))
+        self.assertEqual(len(m1["positions"]), len(m0["positions"]))
+        self.assertEqual(m1["extents"], m0["extents"])
+        self.assertFalse(np.allclose(m1["positions"], m0["positions"]))
+        self.assertFalse(np.isnan(m1["positions"]).any())
+
+    def test_params_from_json_sanitizes_sculpt(self):
+        p = relief_gui.params_from_json({"sculpt": [
+            {"radius_mm": 5, "strength_mm": 1, "points": [{"u": 0.2, "v": 0.3}]},
+            {"radius_mm": 0, "strength_mm": 1, "points": [{"u": 0.1, "v": 0.1}]},
+            {"radius_mm": 5, "strength_mm": 0, "points": [{"u": 0.1, "v": 0.1}]},
+            {"radius_mm": 5, "strength_mm": 1, "points": []},
+            {"radius_mm": 5, "strength_mm": 1,
+             "points": [{"u": -3, "v": 9}, {"u": "x", "v": 0.5}]},
+            "not a stroke",
+        ]})
+        self.assertEqual(len(p.sculpt), 2)
+        self.assertEqual(p.sculpt[0]["points"][0], {"u": 0.2, "v": 0.3})
+        self.assertEqual(p.sculpt[1]["points"][0], {"u": 0.0, "v": 1.0})
+        self.assertEqual(relief_gui.DEFAULTS["sculpt"], [])
+
+
 class DepthDecodeTest(unittest.TestCase):
     def test_16bit_png_keeps_full_precision(self):
         """The old .convert('RGB') bug clipped everything above 255 to white."""
@@ -376,6 +452,15 @@ class ServerTest(unittest.TestCase):
             self.assertAlmostEqual(head["extents"][0], upright["extents"][0], places=3)
             self.assertAlmostEqual(head["extents"][1], upright["extents"][1], places=3)
             self.assertEqual(head["vertices"], upright["vertices"])
+
+    def test_preview_accepts_sculpt_strokes(self):
+        stroke = {"radius_mm": 8, "strength_mm": 1.5,
+                  "points": [{"u": 0.5, "v": 0.4}, {"u": 0.52, "v": 0.42}]}
+        plain = self._preview_head(width_mm=60)
+        sculpted = self._preview_head(width_mm=60, sculpt=[stroke])
+        self.assertAlmostEqual(sculpted["extents"][0], plain["extents"][0], places=3)
+        self.assertAlmostEqual(sculpted["extents"][1], plain["extents"][1], places=3)
+        self.assertEqual(sculpted["vertices"], plain["vertices"])
 
     def test_find_running_detects_this_server(self):
         # GET /api/hello has to work for this: the probe used to 404 and fall

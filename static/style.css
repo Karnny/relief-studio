@@ -80,6 +80,15 @@ main { flex: 1; display: flex; min-height: 0; }
 }
 .ratio-row .mini:hover { color: var(--text); border-color: #4a525a; }
 
+/* Sculpt action row inside the Sculpt group. */
+.sculpt-actions { display: flex; gap: 8px; margin-top: 10px; }
+.sculpt-actions .mini {
+  flex: 1; padding: 5px 8px; font-size: 11px; border-radius: 6px;
+  border: 1px solid var(--line); background: #212529; color: var(--muted); cursor: pointer;
+}
+.sculpt-actions .mini:hover { color: var(--text); border-color: #4a525a; }
+#sculptInfo b { color: var(--text); font-weight: 500; }
+
 .segmented { display: flex; background: #101215; border: 1px solid var(--line); border-radius: 8px; padding: 3px; gap: 3px; }
 .segmented button {
   flex: 1; padding: 6px 4px; border: 0; border-radius: 6px; background: transparent;
