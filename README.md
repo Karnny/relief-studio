@@ -7,7 +7,7 @@ sculpt brush and streamed STL/OBJ/GLB export.
 There is no AI mesh generation in this tool: the input is a height field (a depth image)
 and the output is generated geometry. That means it works the same with depth maps from
 photogrammetry, monocular depth estimators, 3D-printing tooling, painted height maps, or
-commercial depth-map exporters (for example the source tool). A depth map plus the settings below is
+commercial depth-map exporters. A depth map plus the settings below is
 enough to reproduce a plate deterministically — the same input and settings always produce
 the same bytes.
 
