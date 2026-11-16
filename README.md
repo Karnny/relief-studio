@@ -39,6 +39,14 @@ returns `{depth, source}` — the depth map you can download.
 | — | `removeThreshold` | 0.01 | 0.01–1 | Silhouette threshold when the base is removed. |
 | Color Mapping | (texture only) | — | — | Bakes the photo into UVs; no effect on geometry. |
 
+**Plate size (this tool's extension).** the source tool only offers the single *Size* slider. The GUI
+exposes **W and H in millimetres** with a Photoshop-style aspect-ratio chain: lock it to scale
+proportionally, unlock it to stretch a plate wider or slimmer than the depth map's own aspect
+(handy for adjusting a face model). **Fit depth map** restores the natural aspect. When a
+height is set, `widthMM` and `heightMM` are the exact plate dimensions; without one, the long
+edge behaves like the source tool's `widthMM` and the other edge follows the depth-map aspect. The mesh
+grid still follows the depth-map aspect, so stretching changes proportions, not detail.
+
 Depth maps may be 8-bit or **16-bit** grayscale. 16-bit PNGs (the source tool's own relief
 depth maps are `I;16`, values 0–65535) are decoded at full precision; converting
 them through RGB clips everything above 255 to white and collapses the plate into
@@ -63,10 +71,10 @@ a binary mask.
 
 A local dark-themed studio, modelled on the source tool's panel:
 
-- **Left panel** — drop a depth map (PNG/JPG), then adjust *Size*, *Carving mode*
-  (Emboss/Engrave), *Carving depth*, and under *Advanced*: *Remove base*,
-  *Base thickness*, *Depth curve*, *Bend mode/axis/angle*, *Export resolution*.
-  A demo map loads on start so the viewport is never empty.
+- **Left panel** — drop a depth map (PNG/JPG), then adjust *Plate size* (W × H in mm with
+  aspect lock and *Fit depth map*), *Carving mode* (Emboss/Engrave), *Carving depth*, and
+  under *Advanced*: *Remove base*, *Base thickness*, *Depth curve*, *Bend mode/axis/angle*,
+  *Export resolution*. A demo map loads on start so the viewport is never empty.
 - **Viewport** — orbit / zoom / pan, wireframe, auto-rotate, and a *Texture*
   toggle that maps the source image back onto the surface UVs.
 - **Preview resolution** — 128–2048 grid nodes on the long edge (default 256),
@@ -91,11 +99,15 @@ and the export, so what you see is exactly what you save. It binds to
 ```bash
 python3 relief.py depth.png -o plate.stl \
     --width-mm 60 --relief-mm 19 --base 0.1 --resolution 2048
+
+# stretch the plate to an exact 80 x 40 mm (Photoshop-style W x H)
+python3 relief.py depth.png -o plate.stl --width-mm 80 --height-mm 40
 ```
 
-`--engrave`, `--curve gamma|s-curve`, `--bend convex|concave`, `--bend-axis yz`,
-`--bend-angle 60`, `--remove-base`, `--stats` are supported. Output is binary STL
-or OBJ, in millimetres, watertight.
+`--height-mm` (explicit plate height; omit to follow the depth-map aspect), `--engrave`,
+`--curve gamma|s-curve`, `--bend convex|concave`, `--bend-axis yz`, `--bend-angle 60`,
+`--remove-base`, `--stats` are supported. Output is binary STL or OBJ, in millimetres,
+watertight.
 
 Compare a the source tool download against a rebuild:
 
@@ -128,10 +140,10 @@ Neither affects the geometry of a rectangular plate produced from a depth map.
 python -m unittest discover -s tests -v
 ```
 
-Twelve stdlib tests (~4 s; only numpy and pillow are needed): the 512-grid `demo-depth.png`
-STL hash canary (byte-identical across platforms), 16-bit depth decode precision, the
-GUI server's `/api/hello` / single-instance probing, and aborted-client handling. CI runs
-them before every build.
+Twenty stdlib tests (~3.5 s; only numpy and pillow are needed): the 512-grid
+`demo-depth.png` STL hash canary (byte-identical across platforms), 16-bit depth decode
+precision, the plate W × H transform (auto and explicit), the GUI server's `/api/hello` /
+single-instance probing, and aborted-client handling. CI runs them before every build.
 
 
 ## macOS app

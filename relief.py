@@ -26,7 +26,8 @@ from PIL import Image
 
 @dataclass
 class ReliefParams:
-    width_mm: float = 60.0          # the source tool "Size"          (20..250)
+    width_mm: float = 60.0          # the source tool "Size"          (20..250); exact plate width when height_mm is set
+    height_mm: float = 0.0          # explicit plate height in mm (0 = follow the depth-map aspect)
     relief_height: float = 6.0      # "Carving Depth"       (0..60)
     base_thickness: float = 1.0     # "Base Thickness"      (0.1..10)
     subdivisions: int = 1024        # "Mesh Resolution"     (512..2048)
@@ -156,8 +157,16 @@ def build_relief(depth: np.ndarray, p: ReliefParams) -> dict:
     cols = subdiv if aspect >= 1 else max(2, int(round(subdiv * aspect)))
     rows = subdiv if aspect < 1 else max(2, int(round(subdiv / aspect)))
 
-    width_mm = p.width_mm if aspect >= 1 else p.width_mm * aspect
-    height_mm = p.width_mm / aspect if aspect >= 1 else p.width_mm
+    if p.height_mm and p.height_mm > 0.0:
+        # Photoshop-style transform: W and H are the actual plate dimensions, so
+        # the depth map can be stretched wider or slimmer than its own aspect.
+        width_mm = float(p.width_mm)
+        height_mm = float(p.height_mm)
+    else:
+        # the source tool "Size": the long edge is width_mm and the other edge follows the
+        # depth-map aspect (the original behaviour, still the default).
+        width_mm = p.width_mm if aspect >= 1 else p.width_mm * aspect
+        height_mm = p.width_mm / aspect if aspect >= 1 else p.width_mm
     dx = width_mm / (cols - 1)
     dy = height_mm / (rows - 1)
 
@@ -386,7 +395,10 @@ def main() -> None:
     ap = argparse.ArgumentParser(description="Depth map -> relief mesh (the source tool-compatible settings)")
     ap.add_argument("depth", help="depth map PNG (white = high)")
     ap.add_argument("-o", "--out", required=True, help="output .stl, .obj or .glb")
-    ap.add_argument("--width-mm", type=float, default=60.0)
+    ap.add_argument("--width-mm", type=float, default=60.0,
+                    help="plate width in mm; with --height-mm it is the exact width")
+    ap.add_argument("--height-mm", type=float, default=0.0,
+                    help="explicit plate height in mm (default: follow the depth-map aspect)")
     ap.add_argument("--relief-mm", type=float, default=6.0)
     ap.add_argument("--base", type=float, default=1.0)
     ap.add_argument("--resolution", type=int, default=1024)
@@ -405,7 +417,8 @@ def main() -> None:
     args = ap.parse_args()
 
     params = ReliefParams(
-        width_mm=args.width_mm, relief_height=args.relief_mm, base_thickness=args.base,
+        width_mm=args.width_mm, height_mm=args.height_mm,
+        relief_height=args.relief_mm, base_thickness=args.base,
         subdivisions=args.resolution, invert_depth=args.engrave, curve=args.curve,
         black_point=args.black_point, smooth=args.smooth,
         remove_base=args.remove_base, remove_threshold=args.remove_threshold,

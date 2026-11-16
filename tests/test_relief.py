@@ -14,6 +14,7 @@ from __future__ import annotations
 import contextlib
 import hashlib
 import io
+import json
 import os
 import sys
 import tempfile
@@ -40,6 +41,14 @@ CANARY_VERTICES = 272_365
 CANARY_TRIANGLES = 528_374
 CANARY_STL_BYTES = 26_418_784
 CANARY_SHA256_PREFIX = "130d1f33"
+
+
+def parse_mesh_head(payload: bytes) -> dict:
+    """RLF1 payload -> the JSON header the GUI viewport reads."""
+    import struct as _struct
+    assert payload[:4] == b"RLF1", payload[:4]
+    n = _struct.unpack("<I", payload[4:8])[0]
+    return json.loads(payload[8:8 + n])
 
 
 class CanaryTest(unittest.TestCase):
@@ -73,6 +82,44 @@ class CanaryTest(unittest.TestCase):
             digest.startswith(CANARY_SHA256_PREFIX),
             f"STL canary drift: {digest} (expected prefix {CANARY_SHA256_PREFIX})",
         )
+
+
+class PlateSizeTest(unittest.TestCase):
+    """Photoshop-style W x H: stretch a plate away from the depth map aspect."""
+
+    def _depth(self, h=50, w=100):
+        # 2:1 landscape depth map with some structure
+        y, x = np.mgrid[0:h, 0:w].astype(np.float32)
+        return (0.5 + 0.5 * np.sin(x / 8.0) * np.cos(y / 6.0)).astype(np.float32)
+
+    def test_auto_aspect_when_height_is_unset(self):
+        mesh = relief.build_relief(self._depth(), relief.ReliefParams(
+            width_mm=60.0, relief_height=6.0, subdivisions=64))
+        self.assertAlmostEqual(mesh["extents"][0], 60.0, places=4)
+        self.assertAlmostEqual(mesh["extents"][1], 30.0, places=4)
+
+    def test_explicit_height_stretches_the_plate(self):
+        mesh = relief.build_relief(self._depth(), relief.ReliefParams(
+            width_mm=90.0, height_mm=20.0, relief_height=6.0, subdivisions=64))
+        self.assertAlmostEqual(mesh["extents"][0], 90.0, places=4)
+        self.assertAlmostEqual(mesh["extents"][1], 20.0, places=4)
+        # same grid (depth-map aspect), only the geometry is scaled
+        self.assertEqual((mesh["cols"], mesh["rows"]), (64, 32))
+        y = mesh["positions"][:, 1]
+        self.assertAlmostEqual(float(y.min()), -10.0, places=4)
+        self.assertAlmostEqual(float(y.max()), 10.0, places=4)
+
+    def test_default_params_keep_the source tool_behaviour(self):
+        params = relief.ReliefParams()
+        self.assertEqual(params.height_mm, 0.0)
+        self.assertEqual(relief_gui.DEFAULTS["height_mm"], 0.0)
+
+    def test_params_from_json_parses_height(self):
+        p = relief_gui.params_from_json({"width_mm": 70, "height_mm": 35})
+        self.assertEqual(p.width_mm, 70.0)
+        self.assertEqual(p.height_mm, 35.0)
+        p2 = relief_gui.params_from_json({"width_mm": 70, "height_mm": -5})
+        self.assertEqual(p2.height_mm, 0.0)          # negative -> auto
 
 
 class DepthDecodeTest(unittest.TestCase):
@@ -143,6 +190,66 @@ class ServerTest(unittest.TestCase):
             body = json.loads(resp.read().decode())
         self.assertIn("defaults", body)
         self.assertIn("images", body)
+        self.assertIn("height_mm", body["defaults"])
+
+    def test_favicon_is_quiet(self):
+        import urllib.request
+
+        with urllib.request.urlopen(self._url("favicon.ico"), timeout=5) as resp:
+            self.assertEqual(resp.status, 204)     # no 404 noise in the browser console
+
+    def _upload_bytes(self, data):
+        import json
+        import urllib.request
+
+        req = urllib.request.Request(self._url("api/upload"), data=data, method="POST",
+                                     headers={"Content-Type": "image/png"})
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            return json.loads(resp.read())["id"]
+
+    def _upload_demo(self):
+        with open(os.path.join(ROOT, "demo-depth.png"), "rb") as f:
+            return self._upload_bytes(f.read())
+
+    def _preview_head_for(self, image_id, **params):
+        import json
+        import urllib.request
+
+        body = json.dumps({"image_id": image_id, "subdivisions": 128,
+                           "preview_subdivisions": 128, **params}).encode()
+        req = urllib.request.Request(self._url("api/preview"), data=body, method="POST",
+                                     headers={"Content-Type": "application/json"})
+        with urllib.request.urlopen(req, timeout=120) as resp:
+            return parse_mesh_head(resp.read())
+
+    def _preview_head(self, **params):
+        return self._preview_head_for(self._upload_demo(), **params)
+
+    def test_preview_auto_plate_size(self):
+        head = self._preview_head(width_mm=60)
+        self.assertAlmostEqual(head["extents"][0], 60.0, places=3)
+        self.assertAlmostEqual(head["extents"][1], 60.0, places=3)   # demo is square
+
+    def test_preview_auto_plate_size_follows_a_non_square_depth_map(self):
+        import io as _io
+
+        from PIL import Image as _Image
+
+        arr = np.tile(np.linspace(0, 255, 100, dtype=np.uint8), (50, 1))
+        buf = _io.BytesIO()
+        _Image.fromarray(arr).save(buf, format="PNG")
+        image_id = self._upload_bytes(buf.getvalue())
+        auto = self._preview_head_for(image_id, width_mm=60)
+        self.assertAlmostEqual(auto["extents"][0], 60.0, places=3)
+        self.assertAlmostEqual(auto["extents"][1], 30.0, places=3)   # 2:1 depth map
+        stretched = self._preview_head_for(image_id, width_mm=90, height_mm=20)
+        self.assertAlmostEqual(stretched["extents"][0], 90.0, places=3)
+        self.assertAlmostEqual(stretched["extents"][1], 20.0, places=3)
+
+    def test_preview_honours_explicit_plate_size(self):
+        head = self._preview_head(width_mm=80, height_mm=40)
+        self.assertAlmostEqual(head["extents"][0], 80.0, places=3)
+        self.assertAlmostEqual(head["extents"][1], 40.0, places=3)
 
     def test_find_running_detects_this_server(self):
         # GET /api/hello has to work for this: the probe used to 404 and fall

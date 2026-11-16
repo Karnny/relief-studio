@@ -60,6 +60,26 @@ main { flex: 1; display: flex; min-height: 0; }
 .range { width: 100%; accent-color: var(--accent); }
 .tiny { font-size: 11px; color: var(--muted); margin-top: 6px; }
 
+/* Photoshop-style W / H transform row: link toggle keeps the plate aspect. */
+.wh { display: flex; align-items: center; gap: 8px; }
+.wh label { display: flex; align-items: center; gap: 5px; color: var(--muted); font-size: 12px; }
+.wh i { color: var(--muted); font-style: normal; font-size: 11px; }
+.wh .num { width: 66px; }
+.wh .lock {
+  padding: 5px 7px; border-radius: 7px; border: 1px solid var(--line);
+  background: #212529; color: var(--muted); cursor: pointer; font: inherit; line-height: 1;
+}
+.wh .lock.on { color: #101215; background: var(--accent); border-color: var(--accent); }
+.wh .lock:hover { border-color: var(--accent-dim); }
+.ratio-row { display: flex; align-items: center; gap: 8px; }
+.ratio-row span { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ratio-row .mini {
+  flex: 0 0 auto; white-space: nowrap; margin-left: auto; padding: 2px 7px; font-size: 11px;
+  border-radius: 6px; border: 1px solid var(--line); background: transparent;
+  color: var(--muted); cursor: pointer;
+}
+.ratio-row .mini:hover { color: var(--text); border-color: #4a525a; }
+
 .segmented { display: flex; background: #101215; border: 1px solid var(--line); border-radius: 8px; padding: 3px; gap: 3px; }
 .segmented button {
   flex: 1; padding: 6px 4px; border: 0; border-radius: 6px; background: transparent;

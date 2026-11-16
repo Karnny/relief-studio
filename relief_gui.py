@@ -32,7 +32,7 @@ TEMP_DIR = tempfile.gettempdir()
 
 # Depth maps uploaded in this session: id -> float32 array (row 0 = top)
 APP_ID = "relief-studio"
-APP_VERSION = "1.0.1"
+APP_VERSION = "1.1.0"
 SERVER: "ThreadingHTTPServer | None" = None   # set in serve(), used by /api/quit
 UPLOADS: dict[str, np.ndarray] = {}
 SOURCES: dict[str, bytes] = {}          # original image bytes, for the preview texture
@@ -43,7 +43,7 @@ EXPORT_MAX = 8192
 FORMAT_MAX = {"stl": EXPORT_MAX, "obj": 2048, "glb": 2048}
 
 DEFAULTS = {
-    "width_mm": 60.0, "relief_height": 6.0, "base_thickness": 1.0,
+    "width_mm": 60.0, "height_mm": 0.0, "relief_height": 6.0, "base_thickness": 1.0,
     "subdivisions": 1024, "invert_depth": False, "curve": "linear",
     "remove_base": False, "remove_threshold": 0.01, "closed_back": True,
     "black_point": 0.0, "smooth": 0.0,
@@ -55,7 +55,8 @@ def params_from_json(body: dict) -> relief.ReliefParams:
     d = dict(DEFAULTS)
     d.update({k: v for k, v in body.items() if k in DEFAULTS})
     return relief.ReliefParams(
-        width_mm=float(d["width_mm"]), relief_height=float(d["relief_height"]),
+        width_mm=float(d["width_mm"]), height_mm=max(0.0, float(d["height_mm"])),
+        relief_height=float(d["relief_height"]),
         base_thickness=float(d["base_thickness"]),
         subdivisions=int(round(float(d["subdivisions"]))),
         invert_depth=bool(d["invert_depth"]), curve=str(d["curve"]),
@@ -144,6 +145,8 @@ class Handler(BaseHTTPRequestHandler):
                                     "images": [{"id": k, "width": int(v.shape[1]),
                                                 "height": int(v.shape[0])}
                                                for k, v in UPLOADS.items()]})
+        if path == "/favicon.ico":                    # browsers ask; no asset shipped
+            return self._send(204, "image/x-icon", b"")
         rel = path.lstrip("/")
         full = os.path.normpath(os.path.join(STATIC, rel))
         if not full.startswith(STATIC) or not os.path.isfile(full):
@@ -249,7 +252,8 @@ class Handler(BaseHTTPRequestHandler):
             relief.write_obj(mesh, out)
         else:
             relief.write_glb(mesh, out)
-        name = f"relief-{p.width_mm:g}mm-{p.subdivisions}px.{fmt}"
+        name = (f"relief-{mesh['extents'][0]:g}x{mesh['extents'][1]:g}mm"
+                f"-{p.subdivisions}px.{fmt}")
         size = os.path.getsize(out)
         self.send_response(200)
         self.send_header("Content-Type", "application/octet-stream")

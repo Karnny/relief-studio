@@ -19,6 +19,9 @@ const state = {
   textured: true,
   previewSubdiv: 256,
   lastMeshMs: 0,
+  aspectLock: true,      // link W and H like Photoshop's transform chain
+  imageAspect: 1,        // depth map width / height
+  ratio: 1,              // locked W / H ratio
 };
 
 // ---------------------------------------------------------------- three.js
@@ -88,6 +91,7 @@ function frameCamera(head) {
 function readControls() {
   return {
     width_mm: +$('width_mm').value,
+    height_mm: +$('height_mm').value,
     relief_height: +$('relief_height').value,
     base_thickness: +$('base_thickness').value,
     subdivisions: +$('subdivisions').value,
@@ -207,11 +211,85 @@ function bindPair(numId, rangeId, onChange) {
   num.addEventListener('change', () => schedule());
 }
 
-['width_mm', 'relief_height', 'base_thickness', 'subdivisions', 'bend_angle', 'preview_res', 'black_point', 'smooth'].forEach((id) =>
+['relief_height', 'base_thickness', 'subdivisions', 'bend_angle', 'preview_res', 'black_point', 'smooth'].forEach((id) =>
   bindPair(id, id + '_r'));
 
-['width_mm', 'relief_height', 'base_thickness', 'subdivisions', 'bend_angle'].forEach((id) =>
+['relief_height', 'base_thickness', 'subdivisions', 'bend_angle'].forEach((id) =>
   $(id + '_r').addEventListener('input', () => schedule()));
+
+// ------------------------------------------------- plate W × H (Photoshop-style)
+// the source tool's "Size" only scaled the long edge and let the other edge follow the
+// depth-map aspect. Here W and H are independent plate dimensions (mm) with an
+// optional chain lock, so a face can be stretched wider or slimmer.
+const WH_MIN = 5, WH_MAX = 300;
+const clampWH = (v) => Math.min(WH_MAX, Math.max(WH_MIN, Math.round((+v || 0) * 10) / 10));
+const fmtWH = (v) => (Math.round(v * 10) / 10).toString();
+
+function naturalSize(longEdge = 60) {
+  const a = state.imageAspect || 1;
+  return a >= 1 ? [longEdge, longEdge / a] : [longEdge * a, longEdge];
+}
+window.__relief.naturalSize = naturalSize;   // debug handle for automated checks
+
+function updateRatioInfo() {
+  const w = +$('width_mm').value || 1;
+  const h = +$('height_mm').value || 1;
+  const same = state.imageAspect > 0 && Math.abs(w / h - state.imageAspect) < 0.005;
+  $('ratioInfo').textContent =
+    `aspect ${(w / h).toFixed(3)}${state.aspectLock ? ' · linked' : ' · free'}` +
+    (same ? ' · depth-map aspect' : '');
+}
+
+function applySize(w, h, from) {
+  w = clampWH(w); h = clampWH(h);
+  if (state.aspectLock) {
+    if (from === 'w') h = clampWH(w / state.ratio);
+    else if (from === 'h') w = clampWH(h * state.ratio);
+  }
+  if (!state.aspectLock) state.ratio = w / h;
+  $('width_mm').value = fmtWH(w);
+  $('height_mm').value = fmtWH(h);
+  updateRatioInfo();
+}
+
+function sizeEdited(from) {
+  if (state.aspectLock) {
+    const w = +$('width_mm').value, h = +$('height_mm').value;
+    if (from === 'w' && w > 0) $('height_mm').value = fmtWH(clampWH(w / state.ratio));
+    if (from === 'h' && h > 0) $('width_mm').value = fmtWH(clampWH(h * state.ratio));
+  } else {
+    state.ratio = (+$('width_mm').value || 1) / (+$('height_mm').value || 1);
+  }
+  updateRatioInfo();
+}
+
+$('width_mm').addEventListener('input', () => sizeEdited('w'));
+$('height_mm').addEventListener('input', () => sizeEdited('h'));
+['width_mm', 'height_mm'].forEach((id) => $(id).addEventListener('change', () => {
+  applySize($('width_mm').value, $('height_mm').value, 'fit');
+  schedule();
+}));
+
+$('ratio_lock').addEventListener('click', (e) => {
+  state.aspectLock = !state.aspectLock;
+  e.currentTarget.classList.toggle('on', state.aspectLock);
+  e.currentTarget.textContent = state.aspectLock ? '\u{1F517}' : '\u{1F513}';
+  e.currentTarget.setAttribute('aria-label',
+    state.aspectLock ? 'Unlock aspect ratio' : 'Lock aspect ratio');
+  if (state.aspectLock) {
+    state.ratio = (+$('width_mm').value || 1) / (+$('height_mm').value || 1);
+  }
+  updateRatioInfo();
+});
+
+$('fit_aspect').addEventListener('click', () => {
+  const longEdge = Math.max(+$('width_mm').value, +$('height_mm').value) || 60;
+  const [w, h] = naturalSize(longEdge);
+  applySize(w, h, 'fit');
+  state.ratio = w / h;
+  updateRatioInfo();
+  schedule({ frame: true });
+});
 
 // preview resolution only rebuilds the viewport mesh (no export impact)
 const applyPreviewRes = (v) => {
@@ -300,8 +378,15 @@ document.querySelectorAll('[data-preset]').forEach((btn) => {
 });
 
 $('reset').addEventListener('click', () => {
-  const d = { width_mm: 60, relief_height: 6, base_thickness: 1, subdivisions: 1024, bend_angle: 60, black_point: 0, smooth: 0 };
+  const d = { relief_height: 6, base_thickness: 1, subdivisions: 1024, bend_angle: 60, black_point: 0, smooth: 0 };
   for (const [k, v] of Object.entries(d)) { $(k).value = v; $(k + '_r').value = v; }
+  // plate size resets to the depth map's own aspect, 60 mm on the long edge
+  state.aspectLock = true;
+  state.ratio = state.imageAspect || 1;
+  const [nw, nh] = naturalSize(60);
+  applySize(nw, nh, 'fit');
+  $('ratio_lock').classList.add('on');
+  $('ratio_lock').textContent = '\u{1F517}';
   mode = 'emboss'; curve = 'linear'; bend = 'off'; axis = 'xz';
   $('remove_base').checked = false;
   $('bendExtra').hidden = true;
@@ -320,6 +405,12 @@ async function useFile(file) {
   const info = await res.json();
   if (info.error) { alert(info.error); return; }
   state.imageId = info.id;
+  state.imageAspect = info.width / info.height;
+  const longEdge = Math.max(+$('width_mm').value || 60, +$('height_mm').value || 60);
+  const [nw, nh] = naturalSize(longEdge);
+  applySize(nw, nh, 'fit');
+  state.ratio = nw / nh;
+  updateRatioInfo();
   $('imgInfo').textContent = `${info.width} × ${info.height} px · depth ${info.min.toFixed(2)}–${info.max.toFixed(2)}`;
   const thumb = $('thumb');
   thumb.src = URL.createObjectURL(file);
