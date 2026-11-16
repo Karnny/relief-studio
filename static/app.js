@@ -24,6 +24,8 @@ const state = {
   ratio: 1,              // locked W / H ratio
   sculptMode: false,
   sculptStrokes: [],     // [{radius_mm, strength_mm, points:[{u,v}]}] applied to the depth map
+  surface: null,         // {cols, rows, positions} of the latest preview surface
+  plateOffset: { x: 0, y: 0 },   // centring translation applied to the preview geometry
 };
 
 // ---------------------------------------------------------------- three.js
@@ -176,6 +178,9 @@ async function refresh({ frame = false } = {}) {
     // centre the plate so orbiting feels natural
     const c = geo.boundingBox.getCenter(new THREE.Vector3());
     geo.translate(-c.x, -c.y, 0);
+    state.plateOffset = { x: c.x, y: c.y };
+    state.surface = { cols: head.cols, rows: head.rows, positions };
+    state.lastExtents = head.extents;
 
     const old = mesh.geometry;
     mesh.geometry = geo;
@@ -381,11 +386,25 @@ $('tex').addEventListener('click', (e) => {
 // points along the drag, and let the server apply Gaussian falloff patches.
 const raycaster = new THREE.Raycaster();
 const pointerNdc = new THREE.Vector2();
+const planeZ0 = new THREE.Plane(new THREE.Vector3(0, 0, 1), 0);
+const planeHit = new THREE.Vector3();
 let brush = 'raise';
 let activeStroke = null;
 let lastStrokePoint = null;
 let sculptTimer = null;
 let lastSculptPaint = 0;
+
+// World-sized ring that follows the pointer in sculpt mode (like ZBrush/Blender).
+const brushRing = new THREE.Mesh(
+  new THREE.RingGeometry(0.93, 1.0, 64),
+  new THREE.MeshBasicMaterial({
+    color: 0xd6ff3f, side: THREE.DoubleSide, transparent: true,
+    opacity: 0.9, depthTest: false, depthWrite: false,
+  }),
+);
+brushRing.visible = false;
+brushRing.renderOrder = 999;
+scene.add(brushRing);
 
 function sculptStrokesPayload() {
   return activeStroke ? state.sculptStrokes.concat([activeStroke]) : state.sculptStrokes;
@@ -405,15 +424,49 @@ function updateSculptInfo() {
   }
 }
 
-function hitUV(ev) {
+function surfaceZ(u, v) {
+  const s = state.surface;
+  if (!s) return 0;
+  const fx = Math.min(s.cols - 1, Math.max(0, u * (s.cols - 1)));
+  const fy = Math.min(s.rows - 1, Math.max(0, v * (s.rows - 1)));
+  const x0 = Math.floor(fx), y0 = Math.floor(fy);
+  const x1 = Math.min(s.cols - 1, x0 + 1), y1 = Math.min(s.rows - 1, y0 + 1);
+  const tx = fx - x0, ty = fy - y0;
+  const zp = s.positions;
+  const at = (row, col) => zp[(row * s.cols + col) * 3 + 2];
+  const top = at(y0, x0) * (1 - tx) + at(y0, x1) * tx;
+  const bot = at(y1, x0) * (1 - tx) + at(y1, x1) * tx;
+  return top * (1 - ty) + bot * ty;
+}
+
+// Map the pointer onto the plate plane and back to depth-map UV. The plane
+// projection keeps this O(1) even for multi-million-triangle previews (a mesh
+// raycast would walk every triangle on each mouse move).
+function brushCursor(ev) {
   const rect = canvas.getBoundingClientRect();
   pointerNdc.set(((ev.clientX - rect.left) / rect.width) * 2 - 1,
                  -((ev.clientY - rect.top) / rect.height) * 2 + 1);
   raycaster.setFromCamera(pointerNdc, camera);
-  const hits = raycaster.intersectObject(mesh);
-  if (!hits.length || !hits[0].uv) return null;
-  // the packed UV has v = 1 at the top row; the server wants v = 0 at the top
-  return { u: hits[0].uv.x, v: 1 - hits[0].uv.y };
+  if (!raycaster.ray.intersectPlane(planeZ0, planeHit)) return null;
+  const off = state.plateOffset;
+  const ext = state.lastExtents || [60, 60];
+  const u = (planeHit.x + off.x) / ext[0] + 0.5;
+  const v = 0.5 - (planeHit.y + off.y) / ext[1];
+  if (u < 0 || u > 1 || v < 0 || v > 1) return null;
+  return { u, v, point: new THREE.Vector3(planeHit.x, planeHit.y, surfaceZ(u, v)) };
+}
+
+function updateBrushRing(cursor) {
+  if (!state.sculptMode || !cursor) {
+    brushRing.visible = false;
+    return;
+  }
+  brushRing.visible = true;
+  brushRing.position.copy(cursor.point);
+  brushRing.quaternion.copy(camera.quaternion);      // always readable from the camera
+  brushRing.scale.setScalar(+$('brush_radius').value || 6);
+  brushRing.material.color.set(brush === 'lower' ? 0xff9a5a : 0xd6ff3f);
+  brushRing.material.opacity = activeStroke ? 1.0 : 0.85;
 }
 
 function sculptRefreshSoon() {
@@ -448,38 +501,43 @@ $('sculpt').addEventListener('click', (e) => {
   controls.enabled = !state.sculptMode;   // left-drag paints instead of orbiting
   canvas.style.cursor = state.sculptMode ? 'crosshair' : '';
   if (!state.sculptMode) endStroke();
+  brushRing.visible = false;
   updateSculptInfo();
 });
 
 canvas.addEventListener('pointerdown', (ev) => {
   if (!state.sculptMode || ev.button !== 0 || !mesh.visible) return;
-  const hit = hitUV(ev);
-  if (!hit) return;
+  const cursor = brushCursor(ev);
+  if (!cursor) return;
   ev.preventDefault();
   try { canvas.setPointerCapture(ev.pointerId); } catch (_) {}
   activeStroke = {
     radius_mm: +$('brush_radius').value || 6,
     strength_mm: (brush === 'lower' ? -1 : 1) * (+$('brush_strength').value || 1),
-    points: [hit],
+    points: [{ u: cursor.u, v: cursor.v }],
   };
-  lastStrokePoint = hit;
+  lastStrokePoint = { u: cursor.u, v: cursor.v };
+  updateBrushRing(cursor);
   updateSculptInfo();
   sculptRefreshSoon();
 });
 
 canvas.addEventListener('pointermove', (ev) => {
-  if (!activeStroke) return;
-  const hit = hitUV(ev);
-  if (!hit) return;
+  if (!state.sculptMode) return;
+  const cursor = brushCursor(ev);
+  updateBrushRing(cursor);
+  if (!cursor || !activeStroke) return;
   const moved = lastStrokePoint
-    ? Math.hypot(hit.u - lastStrokePoint.u, hit.v - lastStrokePoint.v) : Infinity;
+    ? Math.hypot(cursor.u - lastStrokePoint.u, cursor.v - lastStrokePoint.v) : Infinity;
   if (moved >= 0.006 && activeStroke.points.length < 600) {
-    activeStroke.points.push(hit);
-    lastStrokePoint = hit;
+    activeStroke.points.push({ u: cursor.u, v: cursor.v });
+    lastStrokePoint = { u: cursor.u, v: cursor.v };
     updateSculptInfo();
     sculptRefreshSoon();
   }
 });
+
+canvas.addEventListener('pointerleave', () => { brushRing.visible = false; });
 
 ['pointerup', 'pointercancel'].forEach((name) =>
   canvas.addEventListener(name, () => endStroke()));
@@ -524,6 +582,7 @@ window.__relief.sculpt = {
   mode: () => state.sculptMode,
   brush: () => brush,
   reset: resetSculpt,
+  ring: brushRing,
 };
 
 $('reset').addEventListener('click', () => {

@@ -61,12 +61,15 @@ check the preview. Signs are listed above; 0° is byte-identical to the old outp
 
 **Local sculpt (this tool's extension).** Press **Sculpt** in the viewport toolbar and drag on
 the model: the brush raises (**Raise**) or lowers (**Lower**) the depth in a soft Gaussian patch,
-with **Radius** and **Strength** in millimetres. That is the direct way to pull a mouth forward
-("higher") or knead a forehead shallower, and unlike the sliders it edits only the area you paint.
-The browser raycasts the preview mesh to UV points; `relief.apply_sculpt()` applies the patches to
-the depth map on every preview and export, so the exported STL keeps them. **Undo stroke** /
-**Clear** manage the session; strokes reset when you load another depth map. In the CLI the same
-strokes can be replayed with `--sculpt strokes.json`.
+with **Radius** and **Strength** in millimetres. A ring cursor shows the brush footprint on the
+surface (orange in Lower mode). **Strength is the maximum offset one drag can add** — repeat the
+stroke to build up — and Raise may exceed the current carving depth, so a nose already at the top
+of the depth map still grows instead of flattening against a ceiling (the plate gets taller; lower
+*Carving depth* afterwards to compress it, or Undo). Unlike the sliders this edits only the area
+you paint. The browser projects the pointer onto the plate plane and sends UV strokes;
+`relief.apply_sculpt()` applies the patches to the depth map on every preview and export, so the
+exported STL keeps them. **Undo stroke** / **Clear** manage the session; strokes reset when you
+load another depth map. In the CLI the same strokes can be replayed with `--sculpt strokes.json`.
 
 **Plate size (this tool's extension).** the source tool only offers the single *Size* slider. The GUI
 exposes **W and H in millimetres** with a Photoshop-style aspect-ratio chain: lock it to scale
@@ -182,12 +185,12 @@ Neither affects the geometry of a rectangular plate produced from a depth map.
 python -m unittest discover -s tests -v
 ```
 
-Forty-two stdlib tests (~3.8 s; only numpy and pillow are needed): the 512-grid
+Forty-five stdlib tests (~3.6 s; only numpy and pillow are needed): the 512-grid
 `demo-depth.png` STL hash canary (byte-identical across platforms), 16-bit depth decode
 precision, the plate W × H transform (auto and explicit), the face tilt/turn/roll warps, the
-local sculpt brush (localisation, accumulation, clamping, sanitising), the GUI server's
-`/api/hello` / single-instance probing, and aborted-client handling. CI runs them before
-every build.
+local sculpt brush (locality, per-stroke strength cap, accumulation across strokes, raise
+past the depth ceiling, sanitising), the GUI server's `/api/hello` / single-instance probing,
+and aborted-client handling. CI runs them before every build.
 
 
 ## macOS app

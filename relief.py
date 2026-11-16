@@ -207,10 +207,17 @@ def apply_sculpt(depth: np.ndarray, strokes: list, width_mm: float, height_mm: f
     """Apply local raise/lower brush strokes to the depth map.
 
     Each stroke is ``{"radius_mm": r, "strength_mm": s, "points": [{"u": .., "v": ..}]}``
-    with u/v in 0..1 (v = 0 at the top of the image). ``strength_mm`` is the depth
-    offset at the brush centre (negative lowers). The Gaussian falloff is sized in
-    millimetres on the plate, so the brush feels the same at any plate size.
-    Strokes accumulate; the result is clamped to the valid depth range.
+    with u/v in 0..1 (v = 0 at the top of the image). ``strength_mm`` is the
+    maximum depth offset a single stroke may add at the brush centre (negative
+    lowers); repeating the brush over an area builds it up further. The Gaussian
+    falloff is sized in millimetres on the plate, so the brush feels the same at
+    any plate size.
+
+    The result is *not* clamped to the source depth range: raising a nose that is
+    already at the top of the depth map must actually make it protrude instead of
+    flattening against a 0..1 ceiling (the plate simply gets taller; the carving
+    depth can be lowered afterwards to compensate). A per-stroke cap keeps one
+    drag from stacking dozens of overlapping dabs into a spike.
     """
     if not strokes or not (width_mm > 0) or not (height_mm > 0) or not (relief_height > 0):
         return depth
@@ -236,8 +243,10 @@ def apply_sculpt(depth: np.ndarray, strokes: list, width_mm: float, height_mm: f
         if su <= 0.0 or sv <= 0.0:
             continue
         amp = strength_mm / relief_height
+        cap = abs(amp)
         rx = max(1, int(math.ceil(3.2 * su)))
         ry = max(1, int(math.ceil(3.2 * sv)))
+        stroke_delta = np.zeros((rows, cols), dtype=np.float32)
         for pt in points[:20000]:
             if not isinstance(pt, dict):
                 continue
@@ -259,10 +268,13 @@ def apply_sculpt(depth: np.ndarray, strokes: list, width_mm: float, height_mm: f
             dx = (np.arange(x0, x1, dtype=np.float32) - cx) / su
             dy = (np.arange(y0, y1, dtype=np.float32) - cy) / sv
             falloff = np.exp(-0.5 * (dx[None, :] ** 2 + dy[:, None] ** 2))
-            delta[y0:y1, x0:x1] += amp * falloff.astype(np.float32)
+            stroke_delta[y0:y1, x0:x1] += amp * falloff.astype(np.float32)
+        if cap > 0.0:
+            stroke_delta = np.clip(stroke_delta, -cap, cap)
+        delta += stroke_delta
     if not delta.any():
         return depth
-    return np.clip(depth + delta, 0.0, 1.0).astype(np.float32)
+    return (depth + delta).astype(np.float32)
 
 
 def bilinear_grid(depth: np.ndarray, cols: int, rows: int) -> np.ndarray:

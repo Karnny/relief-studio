@@ -270,13 +270,32 @@ class SculptTest(unittest.TestCase):
         mid = (depth.shape[0] // 2, depth.shape[1] // 2)
         self.assertAlmostEqual(float(two[mid] - 0.5), 2 * float(one[mid] - 0.5), places=3)
 
-    def test_result_is_clamped_to_valid_depth(self):
+    def test_raise_can_exceed_the_source_depth_range(self):
+        # a nose already at depth 1.0 must keep growing instead of flattening at a ceiling
         depth = np.ones((31, 31), np.float32)
-        out = relief.apply_sculpt(depth, [self._stroke(strength=5.0)], 60, 60, 6)
-        self.assertLessEqual(float(out.max()), 1.0)
-        low = np.zeros((31, 31), np.float32)
-        out2 = relief.apply_sculpt(low, [self._stroke(strength=-5.0)], 60, 60, 6)
-        self.assertGreaterEqual(float(out2.min()), 0.0)
+        out = relief.apply_sculpt(depth, [self._stroke(strength=1.2)], 60, 60, 6)
+        self.assertGreater(float(out.max()), 1.0)
+        self.assertAlmostEqual(float(out.max()), 1.0 + 1.2 / 6.0, places=3)
+
+    def test_lower_can_go_below_zero(self):
+        depth = np.zeros((31, 31), np.float32)
+        out = relief.apply_sculpt(depth, [self._stroke(strength=-1.2)], 60, 60, 6)
+        self.assertLess(float(out.min()), 0.0)
+        self.assertAlmostEqual(float(out.min()), -1.2 / 6.0, places=3)
+
+    def test_one_stroke_is_capped_at_its_strength(self):
+        # a slow drag adds many overlapping dabs; the stroke must not stack into a spike
+        depth = np.zeros((41, 41), np.float32)
+        out = relief.apply_sculpt(
+            depth, [self._stroke(u=0.5, v=0.5, strength=1.2, n=40)], 60, 60, 6)
+        self.assertAlmostEqual(float(out.max()), 1.2 / 6.0, places=5)
+
+    def test_repeated_strokes_build_up(self):
+        depth = np.zeros((41, 41), np.float32)
+        one = relief.apply_sculpt(depth, [self._stroke(strength=0.6)], 60, 60, 6)
+        three = relief.apply_sculpt(depth, [self._stroke(strength=0.6)] * 3, 60, 60, 6)
+        mid = (depth.shape[0] // 2, depth.shape[1] // 2)
+        self.assertAlmostEqual(float(three[mid]), 3 * float(one[mid]), places=4)
 
     def test_build_relief_applies_sculpt_but_keeps_the_grid(self):
         y, x = np.mgrid[0:80, 0:60].astype(np.float32)

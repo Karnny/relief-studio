@@ -33,7 +33,7 @@ TEMP_DIR = tempfile.gettempdir()
 
 # Depth maps uploaded in this session: id -> float32 array (row 0 = top)
 APP_ID = "relief-studio"
-APP_VERSION = "1.4.0"
+APP_VERSION = "1.4.1"
 SERVER: "ThreadingHTTPServer | None" = None   # set in serve(), used by /api/quit
 UPLOADS: dict[str, np.ndarray] = {}
 SOURCES: dict[str, bytes] = {}          # original image bytes, for the preview texture

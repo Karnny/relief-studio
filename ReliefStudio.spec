@@ -68,8 +68,8 @@ if sys.platform == "darwin":
         info_plist={
             "CFBundleName": "Relief Studio",
             "CFBundleDisplayName": "Relief Studio",
-            "CFBundleShortVersionString": "1.4.0",
-            "CFBundleVersion": "1.4.0",
+            "CFBundleShortVersionString": "1.4.1",
+            "CFBundleVersion": "1.4.1",
             "NSHighResolutionCapable": True,
             "LSMinimumSystemVersion": "11.0",
             "LSApplicationCategoryType": "public.app-category.graphics-design",
