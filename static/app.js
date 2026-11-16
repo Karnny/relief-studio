@@ -230,7 +230,7 @@ function bindPair(numId, rangeId, onChange) {
   $(id + '_r').addEventListener('input', () => schedule()));
 
 // ------------------------------------------------- plate W × H (Photoshop-style)
-// the source tool's "Size" only scaled the long edge and let the other edge follow the
+// Long-edge convention: "Size" scaled the long edge and let the other edge follow the
 // depth-map aspect. Here W and H are independent plate dimensions (mm) with an
 // optional chain lock, so a face can be stretched wider or slimmer.
 const WH_MIN = 5, WH_MAX = 300;

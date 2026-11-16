@@ -1,47 +1,37 @@
-> Moving this project to another machine? Start with [HANDOFF.md](HANDOFF.md) — current state, Windows build steps, gotchas and open items.
+# Relief Studio — depth map → printable relief mesh
 
-# the source tool relief → depth map → own mesh
+Turn any **grayscale depth map** into a watertight, printable relief plate — with a
+live 3D preview, exact plate dimensions in millimetres, face-pose correction, a local
+sculpt brush and streamed STL/OBJ/GLB export.
 
-Derived from the source tool's shipped web client (Aug 2026 build). The relief
-plate is **not** produced by an AI mesh model: the source tool's client turns the depth map
-into a 2.5D plate with a Web Worker, and the server rebuilds the same geometry
-for the download. So a depth map + the settings is enough to reproduce the mesh.
+There is no AI mesh generation in this tool: the input is a height field (a depth image)
+and the output is generated geometry. That means it works the same with depth maps from
+photogrammetry, monocular depth estimators, 3D-printing tooling, painted height maps, or
+commercial depth-map exporters (for example the source tool). A depth map plus the settings below is
+enough to reproduce a plate deterministically — the same input and settings always produce
+the same bytes.
 
-## Evidence
+## Settings
 
-| What | Where |
-| --- | --- |
-| Relief settings UI (Size, Carving Mode/Depth, Remove Base, Base Thickness, Bend Mode, Mesh Resolution) | `reference-web/js/1ojpo91f_pvau.js` |
-| Parameter schema `relief_params_v1`, defaults, ranges | `reference-web/js/0leysj_qdg73l.js` |
-| Geometry kernel (`buildRelief`) | `reference-web/js/extrude-worker.min.js` (beautified: `extrude-worker.beauty.js`) |
-| Param → worker call, bend/grid-back switch | `reference-web/js/32c54l5nl0du3.js` |
-| Depth map + model download | `reference-web/js/18kcj81rj6_w5.js` (formats: `glb`, `stl`) |
-
-Server side only stores params (`PUT /v2/tasks/{id}/relief/params`) and builds the
-export (`POST /v2/tasks/{id}/relief/model/build`); `GET /v2/tasks/{id}/relief/snapshot`
-returns `{depth, source}` — the depth map you can download.
-
-## Parameter mapping
-
-| UI label | Param | Default | Range | Effect |
+| Setting | Param | Default | Range | Effect |
 | --- | --- | --- | --- | --- |
-| Size | `widthMM` | 60 | 20–250, step 1 | Long edge of the plate in mm; the other edge follows the depth-map aspect ratio. |
-| Carving Mode | `invertDepth` | `false` | — | `Emboss` = height ∝ depth; `Engrave` = height ∝ 1 − depth. |
-| Carving Depth | `reliefHeight` | 6 (low: 3) | 0–60, step 0.1 | Millimetres between the lowest and highest point. `z = depth × reliefHeight`. |
-| Remove Base | `removeBase` | `false` | — | Drops the base: the floor becomes `max(minDepth, removeThreshold) × reliefHeight`. |
-| Base Thickness | `baseThickness` | 1 | 0.1–10, step 0.1 | Solid layer under the surface: floor = `minDepth × reliefHeight − baseThickness`. |
-| Bend Mode | `bendMode` | `off` | off/convex/concave | Cylindrical wrap; radius = `extent / angle`. Bent plates get a full back grid. |
-| Bend Axis | `bendAxis` | `xz` | xz/yz | Which axis is wrapped. |
-| Bend Angle | `bendAngle` | 60° | 0–360, step 5 | Wrap angle; < 1° is treated as off. |
-| Mesh Resolution | `subdivisions` | 1024 | 512–2048, step 64 | Grid nodes on the long edge; short edge is proportional. |
-| — | `curve` | `linear` | linear/gamma/s-curve | Depth response curve (`γ 2.2`, smoothstep). |
-| — | `closedBack` | `true` | — | Adds side walls + back so the plate is watertight. |
-| — | `removeThreshold` | 0.01 | 0.01–1 | Silhouette threshold when the base is removed. |
-| Color Mapping | (texture only) | — | — | Bakes the photo into UVs; no effect on geometry. |
-| Face tilt (this tool) | `tilt_deg` | 0° | −30…30, step 1 | Perspective pitch on the depth rows: positive reads as chin up, negative as chin down. |
-| Face turn (this tool) | `yaw_deg` | 0° | −30…30, step 1 | Perspective yaw on the columns: positive turns the nose right in the image. |
-| Head roll (this tool) | `roll_deg` | 0° | −30…30, step 1 | In-plane rotation of the depth map: positive = clockwise. |
-| Sculpt brush (this tool) | `sculpt` | — | radius 1–25 mm, strength 0.1–5 mm | Local Gaussian raise/lower strokes painted on the model; stored as UV points and applied to the depth map before meshing. |
+| Size | `width_mm` | 60 | 5–300, step 0.5 | Long edge of the plate in mm; the other edge follows the depth-map aspect ratio. |
+| Carving mode | `invert_depth` | `false` | — | `Emboss` = height ∝ depth; `Engrave` = height ∝ 1 − depth. |
+| Carving depth | `relief_height` | 6 | 0–60, step 0.1 | Millimetres between the lowest and highest point: `z = depth × relief_height`. |
+| Remove base | `remove_base` | `false` | — | Drops the base: the floor becomes `max(minDepth, remove_threshold) × relief_height`. |
+| Base thickness | `base_thickness` | 1 | 0.1–10, step 0.1 | Solid layer under the surface: floor = `minDepth × relief_height − base_thickness`. |
+| Bend mode | `bend_mode` | `off` | off/convex/concave | Cylindrical wrap; radius = `extent / angle`. Bent plates get a full back grid. |
+| Bend axis | `bend_axis` | `xz` | xz/yz | Which axis is wrapped. |
+| Bend angle | `bend_angle` | 60° | 0–360, step 5 | Wrap angle; < 1° is treated as off. |
+| Mesh resolution | `subdivisions` | 1024 | 512–2048, step 64 | Grid nodes on the long edge; short edge is proportional. |
+| Depth curve | `curve` | `linear` | linear/gamma/s-curve | Depth response curve (`γ 2.2`, smoothstep). |
+| Closed back | `closed_back` | `true` | — | Adds side walls + back so the plate is watertight. |
+| Remove threshold | `remove_threshold` | 0.01 | 0.01–1 | Silhouette threshold when the base is removed. |
+| Texture | (viewer only) | — | — | Bakes the source image into UVs; no effect on geometry. |
+| Face tilt | `tilt_deg` | 0° | −30…30, step 1 | Perspective pitch on the depth rows: positive reads as chin up, negative as chin down. |
+| Face turn | `yaw_deg` | 0° | −30…30, step 1 | Perspective yaw on the columns: positive turns the nose right in the image. |
+| Head roll | `roll_deg` | 0° | −30…30, step 1 | In-plane rotation of the depth map: positive = clockwise. |
+| Sculpt brush | `sculpt` | — | radius 1–25 mm, strength 0.1–5 mm | Local Gaussian raise/lower strokes painted on the model; stored as UV points and applied to the depth map before meshing. |
 
 **Face correction (this tool's extension).** A relief is a shallow height field, so rotating it
 in 3D barely moves the features — the depth axis is squashed. Instead three sliders warp the
@@ -71,18 +61,17 @@ you paint. The browser projects the pointer onto the plate plane and sends UV st
 exported STL keeps them. **Undo stroke** / **Clear** manage the session; strokes reset when you
 load another depth map. In the CLI the same strokes can be replayed with `--sculpt strokes.json`.
 
-**Plate size (this tool's extension).** the source tool only offers the single *Size* slider. The GUI
-exposes **W and H in millimetres** with a Photoshop-style aspect-ratio chain: lock it to scale
-proportionally, unlock it to stretch a plate wider or slimmer than the depth map's own aspect
-(handy for adjusting a face model). **Fit depth map** restores the natural aspect. When a
-height is set, `widthMM` and `heightMM` are the exact plate dimensions; without one, the long
-edge behaves like the source tool's `widthMM` and the other edge follows the depth-map aspect. The mesh
-grid still follows the depth-map aspect, so stretching changes proportions, not detail.
+**Plate size.** The GUI exposes **W and H in millimetres** with a Photoshop-style
+aspect-ratio chain: lock it to scale proportionally, unlock it to stretch a plate wider or
+slimmer than the depth map's own aspect (handy for adjusting a face model). **Fit depth map**
+restores the natural aspect. When a height is set, `width_mm` and `height_mm` are the exact
+plate dimensions; without a height, the long edge is `width_mm` and the other edge follows
+the depth-map aspect. The mesh grid still follows the depth-map aspect, so stretching changes
+proportions, not detail.
 
-Depth maps may be 8-bit or **16-bit** grayscale. 16-bit PNGs (the source tool's own relief
-depth maps are `I;16`, values 0–65535) are decoded at full precision; converting
-them through RGB clips everything above 255 to white and collapses the plate into
-a binary mask.
+Depth maps may be 8-bit or **16-bit** grayscale. 16-bit PNGs (some depth exporters write
+`I;16` with values 0–65535) are decoded at full precision; converting them through RGB clips
+everything above 255 to white and collapses the plate into a binary mask.
 
 ## Geometry the kernel builds
 
@@ -101,7 +90,7 @@ a binary mask.
 ./run.sh            # opens http://127.0.0.1:8765
 ```
 
-A local dark-themed studio, modelled on the source tool's panel:
+A local dark-themed studio:
 
 - **Left panel** — drop a depth map (PNG/JPG), then adjust *Plate size* (W × H in mm with
   aspect lock and *Fit depth map*), the grouped **Face pose** section (*Face tilt*, *Face
@@ -154,30 +143,32 @@ python3 relief.py depth.png -o plate.stl --sculpt strokes.json
 `--remove-base`, `--stats` are supported. Output is binary STL or OBJ, in millimetres,
 watertight.
 
-Compare a the source tool download against a rebuild:
+Compare a reference export from another tool against a rebuild (same depth map and settings):
 
 ```bash
-python3 compare_mesh.py the source tool-download.stl rebuilt.stl
+python3 compare_mesh.py reference-export.stl rebuilt.stl
 ```
 
 ## Validation
 
-The port was checked against the source tool's own worker (`extrude-worker.min.js` run in a
-Node worker harness, `reference-web/harness/`):
+The kernel is deterministic and verifiable:
 
-| Case | the source tool worker | This script |
-| --- | --- | --- |
-| 128² depth, 60 mm, 19 mm, 256 subdiv, flat | 70,637 verts / 133,110 tris | identical counts, groups, bbox; surface Δz ≤ 3.3e-5 mm |
-| 128² depth, 40 mm, 8 mm, 192 subdiv, engrave + s-curve + convex 90° | 76,784 verts / 147,452 tris | identical counts, groups; bbox Δ ≤ 2e-6 mm |
+- The 512-grid `demo-depth.png` export is a fixed byte hash (`130d1f33…`, 26,418,784 B);
+  the test suite asserts it, so any accidental geometry change shows up immediately.
+- `compare_mesh.py` checks that two meshes built from the same depth map and settings have
+  matching vertex counts, groups and per-vertex surface positions.
+- Cross-platform builds (macOS arm64, Windows arm64, Windows x86-64) have produced the same
+  canary hash for the same input.
+- The grid, side walls/back, bend and extrusion are covered by unit tests and the GUI/API
+  tests in `tests/`.
 
 ## Not implemented
 
-- Silhouette/outline extraction (`removeBackground`, segmentation mask, `phi`) — only
-  reachable when the source tool cuts a shape out of the depth map.
-- Edge fillets (`filletRatio`, 1 % of relief height, applied by the worker's tuning).
-- Texture/UV baking for GLB colour mapping.
-
-Neither affects the geometry of a rectangular plate produced from a depth map.
+- Silhouette/outline extraction from a segmentation mask — rectangular plates from a depth
+  map work; cutting a shape out of the depth map is not modelled.
+- Edge fillets on the relief surface.
+- Baked colour/texture output in GLB (the viewer can show the source image, exports carry
+  geometry + UVs, not a baked material).
 
 ## Tests
 
@@ -185,7 +176,7 @@ Neither affects the geometry of a rectangular plate produced from a depth map.
 python -m unittest discover -s tests -v
 ```
 
-Fifty-four stdlib tests (~3.8 s; only numpy and pillow are needed): the 512-grid
+Fifty-five stdlib tests (~3.8 s; only numpy and pillow are needed): the 512-grid
 `demo-depth.png` STL hash canary (byte-identical across platforms), 16-bit depth decode
 precision, the plate W × H transform (auto and explicit), the face tilt/turn/roll warps, the
 local sculpt brush (locality, per-stroke cap, accumulation, raise past the ceiling,

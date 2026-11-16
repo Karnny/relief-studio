@@ -4,3 +4,8 @@ dist/
 __pycache__/
 *.pyc
 .DS_Store
+
+# local handoff notes (never published)
+/HANDOFF.md
+# local screenshots from testing / docs captures
+/screenshot*.png

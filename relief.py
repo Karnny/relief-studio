@@ -1,10 +1,9 @@
 #!/usr/bin/env python3
-"""Rebuild a the source tool-style relief plate from a depth map.
+"""Rebuild a printable relief plate from a depth map.
 
-The geometry follows the source tool's client-side relief core (`/resource/relief/
-extrude-worker.min.js`, `buildRelief` / `ze`): a bilinear-resampled
-height field is lifted to `depth * reliefHeight` millimetres over a
-`widthMM`-wide grid, then closed with side walls and a flat back.
+A bilinear-resampled height field is lifted to `depth * reliefHeight`
+millimetres over a `width_mm`-wide grid, then closed with side walls and a flat
+back (optionally bent into a cylindrical section).
 
 Usage:
     relief.py depth.png -o plate.stl --width-mm 60 --relief-mm 19 \
@@ -26,7 +25,7 @@ from PIL import Image
 
 @dataclass
 class ReliefParams:
-    width_mm: float = 60.0          # the source tool "Size"          (20..250); exact plate width when height_mm is set
+    width_mm: float = 60.0          # plate size in mm; exact width when height_mm is set
     height_mm: float = 0.0          # explicit plate height in mm (0 = follow the depth-map aspect)
     relief_height: float = 6.0      # "Carving Depth"       (0..60)
     base_thickness: float = 1.0     # "Base Thickness"      (0.1..10)
@@ -141,7 +140,7 @@ def depth_from_image(img: "Image.Image") -> np.ndarray:
 
     16-bit grayscale PNGs are common for depth maps; converting them through
     RGB clips everything above 255 to white and turns the plate into a binary
-    mask, so decode those at full precision (the source tool does the same).
+    mask, so decode those at full precision (the same convention depth exporters use).
     """
     mode = img.mode
     if mode.startswith("I;16") or mode == "I":
@@ -330,7 +329,8 @@ def build_relief(depth: np.ndarray, p: ReliefParams) -> dict:
         width_mm = float(p.width_mm)
         height_mm = float(p.height_mm)
     else:
-        # the source tool "Size": the long edge is width_mm and the other edge follows the
+        # Long-edge convention: width_mm is the long edge and the other edge
+        # follows the depth-map aspect (height_mm > 0 overrides both).
         # depth-map aspect (the original behaviour, still the default).
         width_mm = p.width_mm if aspect >= 1 else p.width_mm * aspect
         height_mm = p.width_mm / aspect if aspect >= 1 else p.width_mm
@@ -496,7 +496,7 @@ def write_stl(mesh: dict, path: str, name: str = "relief", chunk: int = 1_500_00
 
 
 def compute_normals(positions: np.ndarray, index: np.ndarray) -> np.ndarray:
-    """Area-weighted vertex normals (same accumulation as the source tool's kernel)."""
+    """Area-weighted vertex normals (standard triangle-area accumulation)."""
     tri = index.reshape(-1, 3)
     p0, p1, p2 = positions[tri[:, 0]], positions[tri[:, 1]], positions[tri[:, 2]]
     fn = np.cross(p1 - p0, p2 - p0)
@@ -559,7 +559,7 @@ def write_glb(mesh: dict, path: str) -> None:
 def write_obj(mesh: dict, path: str) -> None:
     pos, uv, idx = mesh["positions"], mesh["uvs"], mesh["index"].reshape(-1, 3)
     with open(path, "w", encoding="utf-8") as f:
-        f.write("# relief plate (the source tool-compatible relief parameters)\n")
+        f.write("# relief plate (depth map -> printable mesh)\n")
         for p in pos:
             f.write(f"v {p[0]:.6f} {p[1]:.6f} {p[2]:.6f}\n")
         for t in uv:
@@ -569,7 +569,7 @@ def write_obj(mesh: dict, path: str) -> None:
 
 
 def main() -> None:
-    ap = argparse.ArgumentParser(description="Depth map -> relief mesh (the source tool-compatible settings)")
+    ap = argparse.ArgumentParser(description="Depth map -> relief mesh")
     ap.add_argument("depth", help="depth map PNG (white = high)")
     ap.add_argument("-o", "--out", required=True, help="output .stl, .obj or .glb")
     ap.add_argument("--width-mm", type=float, default=60.0,
@@ -582,9 +582,9 @@ def main() -> None:
     ap.add_argument("--engrave", action="store_true")
     ap.add_argument("--curve", choices=["linear", "gamma", "s-curve"], default="linear")
     ap.add_argument("--black-point", type=float, default=0.0,
-                    help="treat depths below this (0-1) as background, like the source tool's depth map")
+                    help="treat depths below this (0-1) as background, as in depth-map exports")
     ap.add_argument("--smooth", type=float, default=0.0,
-                    help="gaussian blur sigma in depth-map pixels (2-3 matches the source tool's smoothness)")
+                    help="gaussian blur sigma in depth-map pixels (2-3 smooths typical depth maps)")
     ap.add_argument("--remove-base", action="store_true")
     ap.add_argument("--remove-threshold", type=float, default=0.01)
     ap.add_argument("--bend", choices=["off", "convex", "concave"], default="off")

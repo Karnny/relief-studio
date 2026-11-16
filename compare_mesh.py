@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
-"""Compare a downloaded the source tool relief export with a locally rebuilt plate.
+"""Compare a reference relief export with a locally rebuilt plate.
 
 Both meshes are expected to come from the same depth map and settings, so
 every surface vertex of the export should land on the rebuilt grid at the
 same (x, y) with the same z.
 
-    compare_mesh.py the source tool.stl rebuilt.stl
+    compare_mesh.py reference.stl rebuilt.stl
 """
 from __future__ import annotations
 
@@ -48,7 +48,7 @@ def surface_points(tris: np.ndarray) -> np.ndarray:
 
 def main() -> None:
     ap = argparse.ArgumentParser()
-    ap.add_argument("reference", help="the source tool export (.stl or .obj)")
+    ap.add_argument("reference", help="reference export (.stl or .obj)")
     ap.add_argument("rebuilt", help="mesh from relief.py")
     ap.add_argument("--tolerance", type=float, default=0.05, help="mm; default 0.05")
     args = ap.parse_args()

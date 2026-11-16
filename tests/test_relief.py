@@ -113,7 +113,7 @@ class PlateSizeTest(unittest.TestCase):
         self.assertAlmostEqual(float(y.min()), -10.0, places=4)
         self.assertAlmostEqual(float(y.max()), 10.0, places=4)
 
-    def test_default_params_keep_the source tool_behaviour(self):
+    def test_default_params_keep_long_edge_behaviour(self):
         params = relief.ReliefParams()
         self.assertEqual(params.height_mm, 0.0)
         self.assertEqual(relief_gui.DEFAULTS["height_mm"], 0.0)

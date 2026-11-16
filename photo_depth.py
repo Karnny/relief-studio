@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Photo -> 16-bit depth map, using Depth Anything V2 (Small, ONNX, Apache-2.0).
 
-This is the free stand-in for the step the source tool runs server-side: a monocular
+This is a free depth-estimation step: a monocular depth estimator turns a photo into a
 depth estimator turns the photo into a height field, which relief.py then turns
 into the printable plate.
 
