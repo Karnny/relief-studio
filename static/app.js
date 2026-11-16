@@ -372,14 +372,6 @@ $('tex').addEventListener('click', (e) => {
   e.currentTarget.classList.toggle('on', state.textured);
 });
 
-document.querySelectorAll('[data-preset]').forEach((btn) => {
-  btn.addEventListener('click', () => {
-    const low = btn.dataset.preset === 'low';
-    $('relief_height').value = $('relief_height_r').value = low ? 3 : 6;
-    schedule();
-  });
-});
-
 $('reset').addEventListener('click', () => {
   const d = { relief_height: 6, base_thickness: 1, subdivisions: 1024, bend_angle: 60, black_point: 0, smooth: 0 };
   for (const [k, v] of Object.entries(d)) { $(k).value = v; $(k + '_r').value = v; }

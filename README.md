@@ -91,10 +91,10 @@ a binary mask.
 A local dark-themed studio, modelled on the source tool's panel:
 
 - **Left panel** — drop a depth map (PNG/JPG), then adjust *Plate size* (W × H in mm with
-  aspect lock and *Fit depth map*), the face correction sliders (*Face tilt*, *Face turn*,
-  *Head roll*), *Carving mode* (Emboss/Engrave), *Carving depth*, and under *Advanced*:
-  *Remove base*, *Base thickness*, *Depth curve*, *Bend mode/axis/angle*, *Export
-  resolution*. A demo map loads on start so the viewport is never empty.
+  aspect lock and *Fit depth map*), the grouped **Face pose** section (*Face tilt*, *Face
+  turn*, *Head roll*), *Carving mode* (Emboss/Engrave), *Carving depth*, and under
+  *Advanced*: *Remove base*, *Base thickness*, *Depth curve*, *Bend mode/axis/angle*,
+  *Export resolution*. A demo map loads on start so the viewport is never empty.
 - **Viewport** — orbit / zoom / pan, wireframe, auto-rotate, and a *Texture*
   toggle that maps the source image back onto the surface UVs.
 - **Preview resolution** — 128–2048 grid nodes on the long edge (default 256),

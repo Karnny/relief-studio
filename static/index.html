@@ -31,11 +31,6 @@
     </section>
 
     <section class="card">
-      <div class="presets">
-        <button data-preset="low">Low relief</button>
-        <button data-preset="high">High detail</button>
-      </div>
-
       <div class="field">
         <div class="label"><span>Plate size</span></div>
         <div class="wh">
@@ -50,22 +45,26 @@
         </div>
       </div>
 
-      <div class="field">
-        <div class="label"><span>Face tilt</span><input class="num" id="tilt_deg" type="number" min="-30" max="30" step="1" value="0" /><i>°</i></div>
-        <input class="range" id="tilt_deg_r" type="range" min="-30" max="30" step="1" value="0" />
-        <div class="row tiny">Pitch the head up/down — positive = chin up, negative = chin down.</div>
-      </div>
+      <div class="group">
+        <div class="group-title">Face pose</div>
 
-      <div class="field">
-        <div class="label"><span>Face turn</span><input class="num" id="yaw_deg" type="number" min="-30" max="30" step="1" value="0" /><i>°</i></div>
-        <input class="range" id="yaw_deg_r" type="range" min="-30" max="30" step="1" value="0" />
-        <div class="row tiny">Yaw the head left/right — positive = the nose turns right in the preview, negative = left.</div>
-      </div>
+        <div class="field">
+          <div class="label"><span>Face tilt</span><input class="num" id="tilt_deg" type="number" min="-30" max="30" step="1" value="0" /><i>°</i></div>
+          <input class="range" id="tilt_deg_r" type="range" min="-30" max="30" step="1" value="0" />
+          <div class="row tiny">Pitch the head up/down — positive = chin up, negative = chin down.</div>
+        </div>
 
-      <div class="field">
-        <div class="label"><span>Head roll</span><input class="num" id="roll_deg" type="number" min="-30" max="30" step="1" value="0" /><i>°</i></div>
-        <input class="range" id="roll_deg_r" type="range" min="-30" max="30" step="1" value="0" />
-        <div class="row tiny">Roll the head sideways — positive = clockwise, negative = counter-clockwise.</div>
+        <div class="field">
+          <div class="label"><span>Face turn</span><input class="num" id="yaw_deg" type="number" min="-30" max="30" step="1" value="0" /><i>°</i></div>
+          <input class="range" id="yaw_deg_r" type="range" min="-30" max="30" step="1" value="0" />
+          <div class="row tiny">Yaw the head left/right — positive = the nose turns right in the preview, negative = left.</div>
+        </div>
+
+        <div class="field">
+          <div class="label"><span>Head roll</span><input class="num" id="roll_deg" type="number" min="-30" max="30" step="1" value="0" /><i>°</i></div>
+          <input class="range" id="roll_deg_r" type="range" min="-30" max="30" step="1" value="0" />
+          <div class="row tiny">Roll the head sideways — positive = clockwise, negative = counter-clockwise.</div>
+        </div>
       </div>
 
       <div class="field">
