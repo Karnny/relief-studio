@@ -289,6 +289,14 @@ The Windows build updates itself from GitHub Releases:
 GitHub's unauthenticated API is rate-limited, hence the 6 h cache. Release assets and the
 update path stay unsigned (SmartScreen), so signing the exe is the next trust step.
 
+**Feed visibility:** the release feed must be readable without credentials. This repository
+is currently **private**, so the default `api.github.com/.../releases/latest` check returns
+404 for the app; the banner simply stays hidden. For other PCs to self-update you either make
+the repo public, or publish the release `ReliefStudio.exe` + `.sha256` on a public mirror and
+point the build/app at it (`RELIEF_UPDATE_API` env var, or a future `update.json` next to the
+exe). The release workflow already publishes both assets, so a mirror only needs to copy
+them.
+
 **Windows notes**
 
 - The shipped Windows build keeps a console window: it prints the URL and takes
